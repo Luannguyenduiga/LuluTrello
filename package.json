@@ -1,0 +1,12 @@
+{
+  "name": "lulu-trello-workspace",
+  "private": true,
+  "packageManager": "pnpm@11.0.9",
+  "scripts": {
+    "dev": "pnpm --parallel --recursive run dev",
+    "dev:frontend": "pnpm --filter frontend run dev",
+    "dev:backend": "pnpm --filter trello-backend run dev",
+    "build": "pnpm --recursive run build",
+    "lint": "pnpm --recursive run lint"
+  }
+}
