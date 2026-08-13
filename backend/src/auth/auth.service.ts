@@ -196,7 +196,9 @@ export class AuthService {
 
   /** Builds the URL the OAuth callback redirects the browser back to */
   buildOauthRedirectUrl(user: DocumentData): string {
-    const clientUrl = this.config.get<string>('CLIENT_URL') || 'http://localhost:5173';
+    const clientUrl = (
+      this.config.get<string>('CLIENT_URL') || 'http://localhost:5173'
+    ).replace(/\/+$/, '');
     return `${clientUrl}/auth?token=${encodeURIComponent(this.signToken(user))}`;
   }
 

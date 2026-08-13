@@ -14,9 +14,15 @@ async function bootstrap() {
   app.use(urlencoded({ limit: '50mb', extended: true }));
   app.use('/uploads', express.static(join(__dirname, '..', 'uploads')));
 
+  const config = app.get(ConfigService);
+  const clientUrl = (
+    config.get<string>('CLIENT_URL') || 'http://localhost:5173'
+  ).replace(/\/+$/, '');
+
   app.enableCors({
-    origin: '*', // Allow all origins for dev testing
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    // The deployed SPA plus the local Vite dev/preview servers; nothing else.
+    origin: [...new Set([clientUrl, 'http://localhost:5173', 'http://localhost:4173'])],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   });
 
   app.useGlobalPipes(
@@ -27,7 +33,6 @@ async function bootstrap() {
     }),
   );
 
-  const config = app.get(ConfigService);
   const port = config.get<number>('PORT') || 5090;
 
   await app.listen(port);
