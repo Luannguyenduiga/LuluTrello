@@ -123,7 +123,7 @@ JWT_SECRET="..."
 FIREBASE_SERVICE_ACCOUNT='{"type":"service_account","project_id":"lulu-trello", ...}'
 
 # SMTP Nodemailer Email Credentials (Gmail SMTP Example)
-SMTP_HOST=smtp.gmail.com
+SMTP_HOST=smtp.your-email-provider.com
 SMTP_PORT=587
 SMTP_USER=your_email@gmail.com
 SMTP_PASS=your_gmail_app_password_16_chars
