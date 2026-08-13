@@ -77,7 +77,7 @@ export class BoardsController {
   @Post(':boardId/invite')
   @HttpCode(HttpStatus.OK)
   @UseGuards(BoardAccessGuard)
-  @BoardRoles(BoardRole.OWNER, BoardRole.ADMIN, BoardRole.MEMBER)
+  @BoardRoles(BoardRole.OWNER, BoardRole.LEADER, BoardRole.MEMBER)
   inviteMember(
     @CurrentBoard() board: DocumentData,
     @CurrentBoardRole() role: BoardRole,
@@ -87,16 +87,31 @@ export class BoardsController {
     return this.boardsService.inviteMember(board, role, dto, user);
   }
 
+  // Removing someone from the workspace - owner and leaders.
+  // Which of them may remove which member is decided in the service.
+  @Delete(':boardId/members/:memberId')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(BoardAccessGuard)
+  @BoardRoles(BoardRole.OWNER, BoardRole.LEADER)
+  removeMember(
+    @CurrentBoard() board: DocumentData,
+    @CurrentBoardRole() role: BoardRole,
+    @Param('memberId') memberId: string,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.boardsService.removeMember(board, role, memberId, user);
+  }
+
   @Get(':id')
   @UseGuards(BoardAccessGuard)
   getBoardDetails(@CurrentBoard() board: DocumentData, @CurrentBoardRole() role: BoardRole) {
     return this.boardsService.getBoardDetails(board, role);
   }
 
-  // Board settings - owner and admins
+  // Board settings - owner and leaders
   @Put(':id')
   @UseGuards(BoardAccessGuard)
-  @BoardRoles(BoardRole.OWNER, BoardRole.ADMIN)
+  @BoardRoles(BoardRole.OWNER, BoardRole.LEADER)
   updateBoardDetails(@CurrentBoard() board: DocumentData, @Body() dto: UpdateBoardDto) {
     return this.boardsService.updateBoardDetails(board, dto);
   }

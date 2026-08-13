@@ -10,8 +10,12 @@
     "target": "ES2022",
     "sourceMap": true,
     "outDir": "./dist",
-    "baseUrl": "./",
+    "rootDir": "./src",
     "incremental": true,
+    // Keep the incremental cache inside dist so `nest build` (deleteOutDir)
+    // always invalidates it. Left at the default it lands next to tsconfig.json
+    // whenever `tsc --noEmit` runs, and a later build then emits nothing.
+    "tsBuildInfoFile": "./dist/tsconfig.tsbuildinfo",
     "skipLibCheck": true,
     "strictNullChecks": true,
     "forceConsistentCasingInFileNames": true,

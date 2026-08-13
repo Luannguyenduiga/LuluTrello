@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import axios from 'axios';
+import type { Profile as GithubProfile } from 'passport-github2';
 import { FirestoreService, DocumentData } from '../common/firestore/firestore.service';
 import { MailService } from '../mail/mail.service';
 
@@ -124,6 +124,7 @@ export class AuthService {
       name: normalizedEmail.split('@')[0],
       avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(normalizedEmail)}`,
       createdAt: new Date().toISOString(),
+      role: 'user',
     });
 
     return { id: created.id, email: created.email };
@@ -144,16 +145,12 @@ export class AuthService {
     return { accessToken: this.signToken(user), user: this.publicUser(user) };
   }
 
-  getGithubAuthorizeUrl(redirectUri?: string): string {
-    const clientId = this.config.get<string>('GITHUB_CLIENT_ID');
-    if (!clientId) {
-      // Without OAuth credentials, bounce back to the client in mock mode
-      return `${redirectUri || 'http://localhost:5173/auth'}?mock_github=true`;
-    }
-    return `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=user,repo`;
-  }
-
-  async githubCallback(code?: string, isMock?: boolean) {
+  /**
+   * The real OAuth handshake is owned by GithubStrategy (passport-github2).
+   * This endpoint only remains for the "Mock GitHub" developer button, which
+   * signs in a fixed local account without contacting GitHub at all.
+   */
+  githubCallback(isMock?: boolean) {
     const clientId = this.config.get<string>('GITHUB_CLIENT_ID');
     const clientSecret = this.config.get<string>('GITHUB_CLIENT_SECRET');
 
@@ -161,47 +158,55 @@ export class AuthService {
       return this.mockGithubLogin();
     }
 
-    try {
-      const tokenResponse = await axios.post(
-        'https://github.com/login/oauth/access_token',
-        { client_id: clientId, client_secret: clientSecret, code },
-        { headers: { Accept: 'application/json' } },
-      );
+    throw new BadRequestException(
+      'Real GitHub sign-in goes through the redirect flow at GET /auth/github, not this endpoint.',
+    );
+  }
 
-      const accessToken = tokenResponse.data?.access_token;
-      if (!accessToken) {
-        throw new BadRequestException('Failed to retrieve GitHub access token');
-      }
+  /**
+   * Called by GithubStrategy.validate() once GitHub has authenticated the user.
+   * Finds the matching account or creates one, and refreshes the stored token
+   * that the GitHub integration later uses to read repositories.
+   */
+  async validateGithubProfile(profile: GithubProfile, accessToken: string): Promise<DocumentData> {
+    // profile.username can be absent, so fall back to the numeric id rather
+    // than producing an "undefined@github.local" account.
+    const handle = profile.username || profile.id;
+    const email = (profile.emails?.[0]?.value || `${handle}@github.local`).toLowerCase();
+    const avatarUrl = profile.photos?.[0]?.value;
 
-      const userResponse = await axios.get('https://api.github.com/user', {
-        headers: { Authorization: `token ${accessToken}` },
+    const existing = await this.firestore.findOne('users', (u) => u.email === email);
+
+    if (!existing) {
+      return this.firestore.insert('users', {
+        email,
+        name: profile.displayName || handle,
+        avatarUrl: avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${handle}`,
+        githubToken: accessToken,
+        createdAt: new Date().toISOString(),
+        role: 'user'
       });
-
-      const githubUser = userResponse.data;
-      const email = (githubUser.email || `${githubUser.login}@github.local`).toLowerCase();
-
-      let user = await this.firestore.findOne('users', (u) => u.email === email);
-      if (!user) {
-        user = await this.firestore.insert('users', {
-          email,
-          name: githubUser.name || githubUser.login,
-          avatarUrl: githubUser.avatar_url,
-          githubToken: accessToken,
-          createdAt: new Date().toISOString(),
-        });
-      } else {
-        user = await this.firestore.update('users', user.id, {
-          githubToken: accessToken,
-          avatarUrl: githubUser.avatar_url || user.avatarUrl,
-        });
-      }
-
-      return { accessToken: this.signToken(user), user: this.publicUser(user) };
-    } catch (error: any) {
-      if (error instanceof BadRequestException) throw error;
-      this.logger.error(`GitHub authentication error: ${error.message}`);
-      throw new InternalServerErrorException('GitHub Authentication failed');
     }
+
+    return this.firestore.update('users', existing.id, {
+      githubToken: accessToken,
+      avatarUrl: avatarUrl || existing.avatarUrl,
+    });
+  }
+
+  /** Builds the URL the OAuth callback redirects the browser back to */
+  buildOauthRedirectUrl(user: DocumentData): string {
+    const clientUrl = this.config.get<string>('CLIENT_URL') || 'http://localhost:5173';
+    return `${clientUrl}/auth?token=${encodeURIComponent(this.signToken(user))}`;
+  }
+
+  /** Resolves the account behind a JWT, for the client to rehydrate its session */
+  async getMe(userId: string) {
+    const user = await this.firestore.findById('users', userId);
+    if (!user) {
+      throw new NotFoundException('Account not found');
+    }
+    return this.publicUser(user);
   }
 
   private async mockGithubLogin() {

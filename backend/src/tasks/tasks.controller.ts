@@ -3,13 +3,19 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
+  NotFoundException,
   Param,
   Post,
   Put,
+  Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { FirestoreService, DocumentData } from '../common/firestore/firestore.service';
 import { EventsGateway } from '../common/realtime/events.gateway';
@@ -17,16 +23,19 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { BoardAccessGuard } from '../common/guards/board-access.guard';
 import { CardInBoardGuard } from '../common/guards/card-in-board.guard';
 import { TaskInBoardGuard } from '../common/guards/task-in-board.guard';
-import { CONTENT_EDITORS } from '../common/constants/roles';
-import { BoardRoles, CurrentBoard, CurrentTask, CurrentUser, JwtUser } from '../common/decorators';
-import { AssignMemberDto, AttachGithubDto, CreateTaskDto, UpdateTaskDto } from './dto/tasks.dto';
-
-interface TaskAttachment {
-  attachmentId: string;
-  type: string;
-  number: string | number | null;
-  sha: string | null;
-}
+import { BOARD_MANAGERS, BoardRole, CONTENT_EDITORS } from '../common/constants/roles';
+import {
+  BoardRoles,
+  CurrentBoard,
+  CurrentBoardRole,
+  CurrentTask,
+  CurrentUser,
+  JwtUser,
+} from '../common/decorators';
+import { AddCommentDto, AssignMemberDto, CreateTaskDto, UpdateTaskDto } from './dto/tasks.dto';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
+import { join } from 'path';
 
 /**
  * Every route requires a valid token, board membership, and a card that actually
@@ -57,7 +66,7 @@ export class TasksController {
       description: t.description,
       status: t.status || 'Icebox',
       assignedMembers: t.assignedMembers || [],
-      attachments: t.attachments || [],
+      dueDate: t.dueDate || null,
     }));
   }
 
@@ -70,6 +79,9 @@ export class TasksController {
       title: task.title,
       description: task.description,
       status: task.status || 'Icebox',
+      dueDate: task.dueDate || null,
+      attachments: task.attachments || [],
+      comments: task.comments || [],
     };
   }
 
@@ -78,12 +90,6 @@ export class TasksController {
   getAssignedMembers(@Param('taskId') taskId: string, @CurrentTask() task: DocumentData) {
     const assigned: string[] = task.assignedMembers || [];
     return assigned.map((memberId) => ({ taskId, memberId }));
-  }
-
-  @Get(':taskId/github-attachments')
-  @UseGuards(TaskInBoardGuard)
-  getGithubAttachments(@CurrentTask() task: DocumentData): TaskAttachment[] {
-    return task.attachments || [];
   }
 
   // ---- Writes: closed to viewers ----
@@ -95,7 +101,10 @@ export class TasksController {
     @Param('id') cardId: string,
     @Body() dto: CreateTaskDto,
     @CurrentUser() user: JwtUser,
+    @CurrentBoardRole() callerRole: BoardRole,
   ) {
+    if (dto.dueDate) this.assertMaySetDeadline(callerRole);
+
     const created = await this.firestore.insert('tasks', {
       cardId,
       boardId,
@@ -104,7 +113,7 @@ export class TasksController {
       description: dto.description || '',
       status: dto.status || 'Icebox',
       assignedMembers: [],
-      attachments: [],
+      dueDate: dto.dueDate || null,
       createdAt: new Date().toISOString(),
     });
 
@@ -117,6 +126,7 @@ export class TasksController {
       title: created.title,
       description: created.description,
       status: created.status,
+      dueDate: created.dueDate,
     };
   }
 
@@ -130,7 +140,10 @@ export class TasksController {
     @Body() dto: UpdateTaskDto,
     @CurrentTask() task: DocumentData,
     @CurrentBoard() board: DocumentData,
+    @CurrentBoardRole() callerRole: BoardRole,
   ) {
+    if (dto.dueDate !== undefined) this.assertMaySetDeadline(callerRole);
+
     // Determine target card (when dragging a task between columns). The
     // destination must live in the same board, otherwise a task could be pushed
     // out of the board the caller has access to.
@@ -153,6 +166,9 @@ export class TasksController {
       cardId: targetCardId,
       assignedMembers:
         dto.assignedMembers !== undefined ? dto.assignedMembers : task.assignedMembers || [],
+      // An empty string is how the form clears a deadline, so it must reach
+      // Firestore as null rather than being treated as "field not sent".
+      dueDate: dto.dueDate !== undefined ? dto.dueDate || null : task.dueDate || null,
     });
 
     this.events.emitToBoard(boardId, 'task_updated', updated);
@@ -162,7 +178,7 @@ export class TasksController {
 
   @Delete(':taskId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @BoardRoles(...CONTENT_EDITORS)
+  @BoardRoles(...BOARD_MANAGERS)
   @UseGuards(TaskInBoardGuard)
   async deleteTask(@Param('boardId') boardId: string, @Param('taskId') taskId: string) {
     await this.firestore.delete('tasks', taskId);
@@ -193,7 +209,7 @@ export class TasksController {
 
   @Delete(':taskId/assign/:memberId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @BoardRoles(...CONTENT_EDITORS)
+  @BoardRoles(...BOARD_MANAGERS)
   @UseGuards(TaskInBoardGuard)
   async removeMemberAssignment(
     @Param('boardId') boardId: string,
@@ -208,54 +224,150 @@ export class TasksController {
     this.events.emitToBoard(boardId, 'task_assignee_removed', { taskId, memberId });
   }
 
-  @Post(':taskId/github-attach')
+  @Post(':taskId/attachments')
   @BoardRoles(...CONTENT_EDITORS)
   @UseGuards(TaskInBoardGuard)
-  async attachGithubResource(
+  @UseInterceptors(FileInterceptor('file'))
+  async addAttachment(
+    @Req() req: any,
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
-    @Body() dto: AttachGithubDto,
+    @UploadedFile() file: any,
     @CurrentTask() task: DocumentData,
   ) {
-    if (!dto.number && !dto.sha) {
-      throw new BadRequestException('Attachment reference (number or sha) is required');
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
     }
 
-    const attachments: TaskAttachment[] = task.attachments || [];
-    const attachmentId = this.firestore.shortId();
-    const newAttachment: TaskAttachment = {
-      attachmentId,
-      type: dto.type,
-      number: dto.number ?? null,
-      sha: dto.sha ?? null,
-    };
+    const uploadDir = join(__dirname, '..', '..', 'uploads');
+    if (!existsSync(uploadDir)) {
+      mkdirSync(uploadDir, { recursive: true });
+    }
 
+    const fileId = this.firestore.generateId();
+    const extension = file.originalname.split('.').pop() || '';
+    const filename = `${fileId}.${extension}`;
+    const filePath = join(uploadDir, filename);
+
+    writeFileSync(filePath, file.buffer);
+
+    const attachments = task.attachments || [];
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const newAttachment = {
+      id: fileId,
+      name: file.originalname,
+      size: file.size,
+      type: file.mimetype,
+      url: `${baseUrl}/uploads/${filename}`,
+      uploadedAt: new Date().toISOString(),
+    };
     attachments.push(newAttachment);
     await this.firestore.update('tasks', taskId, { attachments });
 
-    this.events.emitToBoard(boardId, 'task_attachment_added', {
-      taskId,
-      attachment: newAttachment,
-    });
-
-    return { taskId, attachmentId, type: dto.type, number: dto.number || dto.sha };
+    this.events.emitToBoard(boardId, 'task_updated', { id: taskId });
+    return newAttachment;
   }
 
-  @Delete(':taskId/github-attachments/:attachmentId')
+  @Delete(':taskId/attachments/:attachmentId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @BoardRoles(...CONTENT_EDITORS)
   @UseGuards(TaskInBoardGuard)
-  async removeGithubAttachment(
+  async removeAttachment(
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
     @Param('attachmentId') attachmentId: string,
     @CurrentTask() task: DocumentData,
   ) {
-    const current: TaskAttachment[] = task.attachments || [];
-    const attachments = current.filter((a) => a.attachmentId !== attachmentId);
+    const current = task.attachments || [];
+    const target = current.find((att: any) => att.id === attachmentId);
+    if (target) {
+      const filename = target.url.split('/').pop();
+      const filePath = join(__dirname, '..', '..', 'uploads', filename);
+      if (existsSync(filePath)) {
+        try {
+          unlinkSync(filePath);
+        } catch (err: any) {
+          new Logger('TasksController').error(`Failed to delete file: ${filePath}`, err.message);
+        }
+      }
+    }
+
+    const attachments = current.filter((att: any) => att.id !== attachmentId);
     await this.firestore.update('tasks', taskId, { attachments });
 
-    this.events.emitToBoard(boardId, 'task_attachment_removed', { taskId, attachmentId });
+    this.events.emitToBoard(boardId, 'task_updated', { id: taskId });
+  }
+
+  @Post(':taskId/comments')
+  @BoardRoles(...CONTENT_EDITORS)
+  @UseGuards(TaskInBoardGuard)
+  async addComment(
+    @Param('boardId') boardId: string,
+    @Param('taskId') taskId: string,
+    @Body() dto: AddCommentDto,
+    @CurrentUser() user: JwtUser,
+    @CurrentTask() task: DocumentData,
+  ) {
+    const author = await this.firestore.findById('users', user.id);
+    if (!author) {
+      throw new BadRequestException('User not found');
+    }
+
+    const comments = task.comments || [];
+    const newComment = {
+      id: this.firestore.generateId(),
+      authorId: author.id,
+      authorName: author.name,
+      authorAvatarUrl: author.avatarUrl,
+      text: dto.text,
+      createdAt: new Date().toISOString(),
+    };
+    comments.push(newComment);
+    await this.firestore.update('tasks', taskId, { comments });
+
+    this.events.emitToBoard(boardId, 'task_updated', { id: taskId });
+    return newComment;
+  }
+
+  @Delete(':taskId/comments/:commentId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @BoardRoles(...CONTENT_EDITORS)
+  @UseGuards(TaskInBoardGuard)
+  async removeComment(
+    @Param('boardId') boardId: string,
+    @Param('taskId') taskId: string,
+    @Param('commentId') commentId: string,
+    @CurrentUser() user: JwtUser,
+    @CurrentBoardRole() callerRole: BoardRole,
+    @CurrentTask() task: DocumentData,
+  ) {
+    const current = task.comments || [];
+    const target = current.find((c: any) => c.id === commentId);
+    if (!target) {
+      throw new NotFoundException('Comment not found');
+    }
+
+    const isAuthor = target.authorId === user.id;
+    const isManager = callerRole === 'owner' || callerRole === 'leader';
+    if (!isAuthor && !isManager) {
+      throw new ForbiddenException('You do not have permission to delete this comment');
+    }
+
+    const comments = current.filter((c: any) => c.id !== commentId);
+    await this.firestore.update('tasks', taskId, { comments });
+
+    this.events.emitToBoard(boardId, 'task_updated', { id: taskId });
+  }
+
+  /**
+   * A deadline is a scheduling decision rather than task content, so it stays
+   * with the people who run the board: members may edit and move a task, but
+   * only the owner and leaders may set or clear when it is due.
+   */
+  private assertMaySetDeadline(callerRole: BoardRole): void {
+    if (!BOARD_MANAGERS.includes(callerRole)) {
+      throw new ForbiddenException('Only the board owner or a leader can set a deadline');
+    }
   }
 
   /** Only people who actually belong to this board can be assigned */

@@ -5,21 +5,19 @@ import {
   HttpCode,
   HttpStatus,
   Post,
-  Query,
   Redirect,
   UseGuards,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { GithubCallbackDto, SendCodeDto, VerifyCodeDto } from './dto/auth.dto';
 import { GithubAuthGuard } from './guards/guardGit';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { CurrentUser, JwtUser } from '../common/decorators';
+import { DocumentData } from '../common/firestore/firestore.service';
 
 @Controller('auth')
 export class AuthController {
-  constructor(
-    private readonly authService: AuthService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly authService: AuthService) {}
 
   @Post('send-code')
   @HttpCode(HttpStatus.OK)
@@ -38,34 +36,39 @@ export class AuthController {
     return this.authService.signin(dto.email, dto.verificationCode);
   }
 
-  @Get('github')
-  @UseGuards(GithubAuthGuard)
-  @Redirect()
-  initiateGithubAuth(@Query('redirect_uri') redirectUri?: string) {
-    return { url: this.authService.getGithubAuthorizeUrl(redirectUri) };
+  /** Lets the client rehydrate its session from a stored token */
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  me(@CurrentUser() user: JwtUser) {
+    return this.authService.getMe(user.id);
   }
 
+  /**
+   * Step 1 of the OAuth handshake. The guard performs the redirect to GitHub,
+   * so this handler body is never reached.
+   */
+  @Get('github')
+  @UseGuards(GithubAuthGuard)
+  initiateGithubAuth(): void {
+    // intentionally empty - GithubAuthGuard redirects to github.com
+  }
+
+  /**
+   * Step 2. GitHub redirects here (GITHUB_CALLBACK_URL). The guard runs the
+   * strategy, which exchanges the code and resolves the account into req.user;
+   * we then hand a signed JWT back to the SPA.
+   */
+  @Get('callback')
+  @UseGuards(GithubAuthGuard)
+  @Redirect()
+  handleGithubRedirectCallback(@CurrentUser() user: DocumentData) {
+    return { url: this.authService.buildOauthRedirectUrl(user) };
+  }
+
+  /** Developer-only shortcut used by the "Mock GitHub" button */
   @Post('github/callback')
   @HttpCode(HttpStatus.OK)
   githubCallback(@Body() dto: GithubCallbackDto) {
-    return this.authService.githubCallback(dto.code, dto.isMock);
-  }
-
-  // GitHub can be configured to redirect straight back to the API; bounce the
-  // authorization code on to the SPA, which then POSTs it to /auth/github/callback
-  @Get('callback')
-  @Redirect()
-  handleRedirectCallback(@Query('code') code?: string) {
-    return { url: `${this.clientUrl()}/auth?code=${code ?? ''}` };
-  }
-
-  @Get('github/callback')
-  @Redirect()
-  handleGithubRedirectCallback(@Query('code') code?: string) {
-    return { url: `${this.clientUrl()}/auth?code=${code ?? ''}` };
-  }
-
-  private clientUrl(): string {
-    return this.config.get<string>('CLIENT_URL') || 'http://localhost:5173';
+    return this.authService.githubCallback(dto.isMock);
   }
 }

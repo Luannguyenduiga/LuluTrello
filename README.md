@@ -19,7 +19,8 @@ Lulu Trello is a premium, real-time Kanban Board Management application featurin
 ### Passwordless Auth & Integrations
 
 * **Passwordless OTP Email Verification**: Enter your email to receive a 6-digit OTP code sent via SMTP (using Gmail/Nodemailer) or simulate it locally.
-* **GitHub Integration**: Connect repos to fetch commits, PRs, and issues, and attach them directly to Kanban cards.
+* **GitHub Sign-In**: Log in with a GitHub account through OAuth, alongside the OTP flow.
+* **Deadlines & Google Calendar**: Give a task a deadline, see it on the board (overdue tasks turn red), and push it to Google Calendar with the assignees added as guests.
 
 ---
 
@@ -52,7 +53,7 @@ TrelloApplication/ (Root Workspace)
         │   ├── decorators/  # @CurrentUser, @CurrentBoard, @BoardRoles, ...
         │   └── realtime/    # EventsGateway (socket.io)
         ├── auth/            # OTP sign-in + GitHub OAuth
-        ├── users/  boards/  cards/  tasks/  github/
+        ├── users/  boards/  cards/  tasks/
         └── mail/            # Nodemailer client
 ```
 

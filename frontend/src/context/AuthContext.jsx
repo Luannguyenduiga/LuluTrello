@@ -7,31 +7,32 @@ export const AuthProvider = ({ children }) => {
   const [token, setToken] = useState(localStorage.getItem('token') || null);
   const [loading, setLoading] = useState(true);
 
-  const API_URL = 'http://localhost:5090';
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5090';
 
   useEffect(() => {
-    // If we have a token, we can load the user profile
+    // Ask the server who this token belongs to. This both validates the token
+    // and refreshes the cached profile; an expired token now logs out on load
+    // instead of leaving a stale session that fails on the first API call.
     const loadUser = async () => {
       if (token) {
         try {
-          // Decode jwt locally or query users profile
-          // Decided to query backend users check endpoint to see if token is valid
-          const res = await fetch(`${API_URL}/users/me`, {
+          const res = await fetch(`${API_URL}/auth/me`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
-          // Wait, `/users/me` is not implemented in backend, but we can do a fallback decoding, 
-          // or retrieve user detail from localStorage, or query `/users/:id`
-          // Let's decode or load from localStorage.
-          const cachedUser = localStorage.getItem('user');
-          if (cachedUser) {
-            setUser(JSON.parse(cachedUser));
+          if (res.ok) {
+            const profile = await res.json();
+            setUser(profile);
+            localStorage.setItem('user', JSON.stringify(profile));
           } else {
-            // Logout if cache is broken
             logout();
           }
         } catch (error) {
+          // Network failure: keep the cached profile so a flaky connection
+          // does not sign the user out
           console.error('Failed to load user', error);
-          logout();
+          const cachedUser = localStorage.getItem('user');
+          if (cachedUser) setUser(JSON.parse(cachedUser));
+          else logout();
         }
       }
       setLoading(false);
@@ -93,6 +94,24 @@ export const AuthProvider = ({ children }) => {
     return data;
   };
 
+  /**
+   * Completes the GitHub redirect flow: the server signed us in and handed the
+   * token back in the URL, so exchange it for the profile and open the session.
+   */
+  const loginWithToken = async (accessToken) => {
+    const res = await fetch(`${API_URL}/auth/me`, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+    if (!res.ok) throw new Error('GitHub sign-in failed');
+
+    const profile = await res.json();
+    setToken(accessToken);
+    setUser(profile);
+    localStorage.setItem('token', accessToken);
+    localStorage.setItem('user', JSON.stringify(profile));
+    return profile;
+  };
+
   const updateProfile = async (updatedData) => {
     if (!user || !token) return;
     const res = await fetch(`${API_URL}/users/${user.id}`, {
@@ -135,13 +154,15 @@ export const AuthProvider = ({ children }) => {
     }
     if (res.status === 403) {
       const data = await res.clone().json().catch(() => ({}));
-      throw new Error(data.error || 'You do not have permission to perform this action');
+      // Nest puts the reason in `message`, which is an array for validation errors
+      const detail = Array.isArray(data.message) ? data.message.join(', ') : data.message;
+      throw new Error(detail || data.error || 'You do not have permission to perform this action');
     }
     return res;
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, sendCode, signup, login, loginWithGithub, logout, updateProfile, fetchWithAuth, API_URL }}>
+    <AuthContext.Provider value={{ user, token, loading, sendCode, signup, login, loginWithGithub, loginWithToken, logout, updateProfile, fetchWithAuth, API_URL }}>
       {children}
     </AuthContext.Provider>
   );

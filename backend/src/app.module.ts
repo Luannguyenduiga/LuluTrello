@@ -10,7 +10,6 @@ import { UsersModule } from './users/users.module';
 import { BoardsModule } from './boards/boards.module';
 import { CardsModule } from './cards/cards.module';
 import { TasksModule } from './tasks/tasks.module';
-import { GithubModule } from './github/github.module';
 
 @Module({
   imports: [
@@ -31,7 +30,6 @@ import { GithubModule } from './github/github.module';
     BoardsModule,
     CardsModule,
     TasksModule,
-    GithubModule,
   ],
   controllers: [AppController],
 })

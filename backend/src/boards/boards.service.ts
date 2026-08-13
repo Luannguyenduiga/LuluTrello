@@ -3,11 +3,12 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { FirestoreService, DocumentData } from '../common/firestore/firestore.service';
 import { EventsGateway } from '../common/realtime/events.gateway';
-import { BoardRole, isAssignableRole } from '../common/constants/roles';
+import { BoardRole, isAssignableRole, resolveBoardRole } from '../common/constants/roles';
 import { JwtUser } from '../common/decorators';
 import {
   CreateBoardDto,
@@ -15,12 +16,14 @@ import {
   ResolveInvitationDto,
   UpdateBoardDto,
 } from './dto/boards.dto';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class BoardsService {
   constructor(
     private readonly firestore: FirestoreService,
     private readonly events: EventsGateway,
+    private readonly mailService: MailService,
   ) {}
 
   async createBoard(dto: CreateBoardDto, user: JwtUser) {
@@ -132,22 +135,27 @@ export class BoardsService {
     // The role the invitee will get once they accept. 'owner' is never assignable.
     const invitedRole = dto.role || BoardRole.MEMBER;
 
-    // Only the owner and admins may hand out the admin role
+    // Only the owner and leaders may hand out the leader role
     if (
-      invitedRole === BoardRole.ADMIN &&
+      invitedRole === BoardRole.LEADER &&
       callerRole !== BoardRole.OWNER &&
-      callerRole !== BoardRole.ADMIN
+      callerRole !== BoardRole.LEADER
     ) {
-      throw new ForbiddenException('Only the owner or an admin can invite someone as admin');
+      throw new ForbiddenException('Only the owner or a leader can invite someone as leader');
     }
 
     let finalMemberId = dto.member_id;
+    let inviteeEmail = dto.email_member;
+
     if (!finalMemberId && dto.email_member) {
       const existing = await this.firestore.findOne(
         'users',
         (u) => u.email.toLowerCase() === dto.email_member!.toLowerCase(),
       );
       if (existing) finalMemberId = existing.id;
+    } else if (finalMemberId && !inviteeEmail) {
+      const existing = await this.firestore.findById('users', finalMemberId);
+      if (existing) inviteeEmail = existing.email;
     }
 
     if (finalMemberId === user.id) {
@@ -165,9 +173,9 @@ export class BoardsService {
         i.boardId === board.id &&
         i.status === 'pending' &&
         ((Boolean(finalMemberId) && i.member_id === finalMemberId) ||
-          (Boolean(dto.email_member) &&
+          (Boolean(inviteeEmail) &&
             i.email_member &&
-            i.email_member.toLowerCase() === dto.email_member!.toLowerCase())),
+            i.email_member.toLowerCase() === inviteeEmail!.toLowerCase())),
     );
     if (duplicate) {
       throw new BadRequestException('An invitation is already pending for this user');
@@ -181,7 +189,7 @@ export class BoardsService {
       board_owner_id: board.ownerId,
       invited_by: user.id,
       member_id: finalMemberId || '',
-      email_member: dto.email_member ? dto.email_member.toLowerCase() : '',
+      email_member: inviteeEmail ? inviteeEmail.toLowerCase() : '',
       role: invitedRole,
       status: 'pending',
       createdAt: new Date().toISOString(),
@@ -196,7 +204,106 @@ export class BoardsService {
       });
     }
 
+    // Send board invitation email if email address is available
+    if (inviteeEmail) {
+      try {
+        const inviter = await this.firestore.findById('users', user.id);
+        const inviterName = inviter ? inviter.name : 'A board member';
+        await this.mailService.sendBoardInvitationEmail(
+          inviteeEmail,
+          board.name,
+          inviterName,
+          invitedRole,
+        );
+      } catch (err: any) {
+        new Logger('BoardsService').error(`Failed to send invitation email to ${inviteeEmail}: ${err.message}`);
+      }
+    }
+
     return { success: true, invitation };
+  }
+
+  /**
+   * Remove somebody from the workspace. Access is already narrowed to owners and
+   * leaders by the guard; the rules that remain are about *who* may be removed.
+   */
+  async removeMember(board: DocumentData, callerRole: BoardRole, memberId: string, user: JwtUser) {
+    // The owner is the board's anchor: `ownerId` would still point at them, so
+    // dropping them from `members` only produces an inconsistent board.
+    if (memberId === board.ownerId) {
+      throw new BadRequestException('The board owner cannot be removed');
+    }
+
+    // Leaving a board yourself is a different action with different rules
+    // (an owner could strand the board), so it is not done through this route.
+    if (memberId === user.id) {
+      throw new BadRequestException('You cannot remove yourself from the board');
+    }
+
+    const members: string[] = Array.isArray(board.members) ? board.members : [];
+    if (!members.includes(memberId)) {
+      throw new NotFoundException('That user is not a member of this board');
+    }
+
+    // Leaders manage the ranks below them. Letting them remove each other would
+    // turn any disagreement between two leaders into a race.
+    if (resolveBoardRole(board, memberId) === BoardRole.LEADER && callerRole !== BoardRole.OWNER) {
+      throw new ForbiddenException('Only the owner can remove a leader');
+    }
+
+    const roles: Record<string, BoardRole> = { ...(board.roles || {}) };
+    delete roles[memberId];
+
+    await this.firestore.update('boards', board.id, {
+      members: members.filter((id) => id !== memberId),
+      roles,
+    });
+
+    await this.detachFromBoardContent(board.id, memberId);
+
+    this.events.emitToBoard(board.id, 'member_removed', { boardId: board.id, memberId });
+    // The removed user may have the board open right now. Telling them directly
+    // lets their client leave the page instead of failing on its next request.
+    this.events.emitToUser(memberId, 'board_access_revoked', {
+      boardId: board.id,
+      boardName: board.name,
+    });
+
+    return { success: true, memberId };
+  }
+
+  /**
+   * Someone who no longer belongs to a board must not linger on its cards and
+   * tasks: they would keep showing up as a participant nobody can now unassign.
+   */
+  private async detachFromBoardContent(boardId: string, memberId: string) {
+    const cards = await this.firestore.find(
+      'cards',
+      (c) =>
+        c.boardId === boardId && Array.isArray(c.list_member) && c.list_member.includes(memberId),
+    );
+    await Promise.all(
+      cards.map((card) =>
+        this.firestore.update('cards', card.id, {
+          list_member: (card.list_member as string[]).filter((id) => id !== memberId),
+        }),
+      ),
+    );
+
+    const tasks = await this.firestore.find(
+      'tasks',
+      (t) =>
+        t.boardId === boardId &&
+        Array.isArray(t.assignedMembers) &&
+        t.assignedMembers.includes(memberId),
+    );
+    await Promise.all(
+      tasks.map((task) =>
+        this.firestore.update('tasks', task.id, {
+          assignedMembers: (task.assignedMembers as string[]).filter((id) => id !== memberId),
+        }),
+      ),
+    );
   }
 
   /**

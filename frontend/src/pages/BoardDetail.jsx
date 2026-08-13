@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
-import { ArrowLeft, Plus, Users, Trash, Edit3, Settings, Check, AlertCircle, PlusCircle, UserPlus, Info } from 'lucide-react';
+import { ArrowLeft, Plus, Users, Trash, Edit3, Settings, Check, AlertCircle, PlusCircle, UserPlus, UserMinus, Calendar, Info } from 'lucide-react';
 import TaskModal from '../components/TaskModal';
 
 const Github = (props) => (
@@ -55,9 +55,17 @@ export default function BoardDetail() {
   const [activeTask, setActiveTask] = useState(null);
   const [activeCardId, setActiveCardId] = useState('');
 
+  // A passed deadline only matters while the task is still open, so a late task
+  // that finally reached Done stops being flagged.
+  const isOverdue = (task) => {
+    if (!task.dueDate || task.status === 'Done') return false;
+    const due = new Date(task.dueDate);
+    return !Number.isNaN(due.getTime()) && due < new Date();
+  };
+
   // Roles a person can be invited as, in order of decreasing power
   const ROLE_OPTIONS = [
-    { value: 'admin', label: 'Admin', hint: 'Can also edit board settings' },
+    { value: 'leader', label: 'Leader', hint: 'Can also edit board settings' },
     { value: 'member', label: 'Member', hint: 'Can create and edit tasks' },
     { value: 'viewer', label: 'Viewer', hint: 'Read-only access' }
   ];
@@ -72,8 +80,17 @@ export default function BoardDetail() {
 
   const myRole = board ? (board.role || roleOf(user?.id)) : null;
   const isOwner = myRole === 'owner';
-  const canManageBoard = myRole === 'owner' || myRole === 'admin';   // board settings
+  const canManageBoard = myRole === 'owner' || myRole === 'leader';  // board settings
   const canEditContent = canManageBoard || myRole === 'member';      // cards & tasks
+
+  // Mirrors the server rules in boards.service.removeMember, so the UI never
+  // offers a button that the API would answer with a 400 or 403.
+  const canRemoveMember = (memberId) => {
+    if (!canManageBoard) return false;
+    if (memberId === board?.ownerId) return false;  // the owner is permanent
+    if (memberId === user?.id) return false;        // leaving is not this action
+    return isOwner || roleOf(memberId) !== 'leader'; // only the owner drops leaders
+  };
 
   // Drag states
   const [draggedTaskId, setDraggedTaskId] = useState(null);
@@ -205,6 +222,18 @@ export default function BoardDetail() {
       loadBoardData();
     });
 
+    socket.on('member_removed', () => {
+      loadBoardData();
+    });
+
+    // Sent to the removed user's own room: the board is gone for them, so leave
+    // the page instead of letting every following request fail with a 403.
+    socket.on('board_access_revoked', ({ boardId: revokedBoardId, boardName }) => {
+      if (revokedBoardId !== boardId) return;
+      alert(`You have been removed from "${boardName}".`);
+      navigate('/');
+    });
+
     return () => {
       socket.emit('leave_board', { boardId });
       socket.off('board_updated');
@@ -216,6 +245,8 @@ export default function BoardDetail() {
       socket.off('task_updated');
       socket.off('task_deleted');
       socket.off('invitation_resolved');
+      socket.off('member_removed');
+      socket.off('board_access_revoked');
     };
   }, [socket, boardId]);
 
@@ -358,17 +389,21 @@ export default function BoardDetail() {
     if (!inviteEmail.trim() && !inviteUserId) return;
 
     try {
+      // Only send the field that was actually filled in: an empty string is not a
+      // valid email and the API rejects it, even though the field is optional.
+      const payload = { role: inviteRole };
+      if (inviteUserId) payload.member_id = inviteUserId;
+      else if (inviteEmail.trim()) payload.email_member = inviteEmail.trim();
+
       const res = await fetchWithAuth(`/boards/${boardId}/invite`, {
         method: 'POST',
-        body: JSON.stringify({
-          member_id: inviteUserId || '',
-          email_member: inviteEmail || '',
-          role: inviteRole
-        })
+        body: JSON.stringify(payload)
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to send invitation');
+        // Nest reports validation failures as `message`, which may be an array
+        const detail = Array.isArray(data.message) ? data.message.join(', ') : data.message;
+        throw new Error(detail || data.error || 'Failed to send invitation');
       }
       setInviteEmail('');
       setInviteUserId('');
@@ -378,6 +413,30 @@ export default function BoardDetail() {
     } catch (err) {
       console.error('Failed to send invite', err);
       alert(err.message || 'Failed to send invitation');
+    }
+  };
+
+  // Drop a collaborator from the workspace. The server also strips them from the
+  // board's cards and tasks, so reload rather than patching state by hand.
+  const handleRemoveMember = async (member) => {
+    const confirmed = window.confirm(
+      `Remove ${member.name} from this workspace?\n\nThey lose access immediately and are unassigned from every card and task here.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetchWithAuth(`/boards/${boardId}/members/${member.id}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const detail = Array.isArray(data.message) ? data.message.join(', ') : data.message;
+        throw new Error(detail || data.error || 'Failed to remove member');
+      }
+      await loadBoardData();
+    } catch (err) {
+      console.error('Failed to remove member', err);
+      alert(err.message || 'Failed to remove member');
     }
   };
 
@@ -470,11 +529,11 @@ export default function BoardDetail() {
                 ) : (
                   boardMembers.map(member => {
                     const memberRole = roleOf(member.id);
-                    // Reuse the existing task-badge palette: owner green, admin
+                    // Reuse the existing task-badge palette: owner green, leader
                     // purple, member blue, viewer grey
                     const roleBadgeClass = {
                       owner: 'done',
-                      admin: 'review',
+                      leader: 'review',
                       member: 'backlog',
                       viewer: 'icebox'
                     }[memberRole] || 'backlog';
@@ -499,6 +558,17 @@ export default function BoardDetail() {
                         <span className={`task-badge ${roleBadgeClass}`} style={{ flexShrink: 0 }}>
                           {memberRole}
                         </span>
+                        {canRemoveMember(member.id) && (
+                          <button
+                            onClick={() => handleRemoveMember(member)}
+                            className="secondary"
+                            title={`Remove ${member.name} from this workspace`}
+                            aria-label={`Remove ${member.name} from this workspace`}
+                            style={{ flexShrink: 0, padding: '5px', color: 'var(--danger, #ef4444)' }}
+                          >
+                            <UserMinus style={{ width: 14, height: 14 }} />
+                          </button>
+                        )}
                       </div>
                     );
                   })
@@ -627,6 +697,13 @@ export default function BoardDetail() {
                       >
                         <div className="task-card-title">{task.title}</div>
                         <div className="task-card-desc">{task.description || 'No description'}</div>
+                        {task.dueDate && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '8px', fontSize: '11px', fontWeight: 700, color: isOverdue(task) ? 'var(--accent-danger)' : 'var(--text-muted)' }}>
+                            <Calendar style={{ width: 11, height: 11 }} />
+                            {new Date(task.dueDate).toLocaleDateString()}
+                            {isOverdue(task) && ' · overdue'}
+                          </div>
+                        )}
                         <div className="task-card-footer">
                           <span className={`task-badge ${statusName.toLowerCase().replace(/\s/g, '')}`}>{statusName}</span>
                           <div style={{ display: 'flex', gap: '3px' }}>
@@ -702,8 +779,8 @@ export default function BoardDetail() {
                 <div style={{ display: 'flex', gap: '8px' }}>
                   {ROLE_OPTIONS.map(option => {
                     const selected = inviteRole === option.value;
-                    // Only the owner and admins are allowed to grant the admin role
-                    const disabled = option.value === 'admin' && !canManageBoard;
+                    // Only the owner and leaders are allowed to grant the leader role
+                    const disabled = option.value === 'leader' && !canManageBoard;
                     return (
                       <button
                         key={option.value}
@@ -711,7 +788,7 @@ export default function BoardDetail() {
                         disabled={disabled}
                         onClick={() => setInviteRole(option.value)}
                         aria-pressed={selected}
-                        title={disabled ? 'Only the owner or an admin can grant this role' : option.hint}
+                        title={disabled ? 'Only the owner or a leader can grant this role' : option.hint}
                         className={selected ? 'primary' : 'secondary'}
                         style={{ flex: 1, flexDirection: 'column', gap: '2px', padding: '10px 8px', alignItems: 'flex-start' }}
                       >
@@ -766,7 +843,7 @@ export default function BoardDetail() {
               </div>
 
               <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                {/* Admins can edit settings, but only the owner may delete the board */}
+                {/* Leaders can edit settings, but only the owner may delete the board */}
                 {isOwner ? (
                   <button type="button" onClick={handleDeleteBoard} className="danger">
                     <Trash style={{ width: 16, height: 16 }} />
@@ -794,6 +871,9 @@ export default function BoardDetail() {
           cardId={activeCardId}
           taskId={activeTask.id}
           members={boardMembers}
+          canEditContent={canEditContent}
+          canDeleteTask={canManageBoard}
+          canSetDeadline={canManageBoard}
           onClose={() => {
             setActiveTask(null);
             setActiveCardId('');

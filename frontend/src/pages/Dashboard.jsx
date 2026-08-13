@@ -52,8 +52,15 @@ export default function Dashboard() {
       loadData();
     });
 
+    // Removed from a workspace elsewhere: drop it from the list right away
+    // rather than leaving a card that 403s when clicked.
+    socket.on('board_access_revoked', ({ boardId }) => {
+      setBoards(prev => prev.filter(b => b.id !== boardId));
+    });
+
     return () => {
       socket.off('invitation_received');
+      socket.off('board_access_revoked');
     };
   }, [socket]);
 

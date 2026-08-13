@@ -23,7 +23,7 @@ const Github = (props) => (
 );
 
 export default function Auth() {
-  const { login, signup, sendCode, loginWithGithub, user, API_URL } = useAuth();
+  const { login, signup, sendCode, loginWithGithub, loginWithToken, user, API_URL } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -42,16 +42,22 @@ export default function Auth() {
       return;
     }
 
-    // Check for GitHub Callback parameters
-    const codeParam = searchParams.get('code');
+    // Check for GitHub Callback parameters.
+    // The real OAuth flow now completes on the server and redirects back with a
+    // signed token; mock_github stays for the offline developer shortcut.
+    const tokenParam = searchParams.get('token');
     const mockParam = searchParams.get('mock_github');
 
-    if (codeParam || mockParam === 'true') {
+    if (tokenParam || mockParam === 'true') {
       const handleGithubAuth = async () => {
         setOauthLoading(true);
         setMessage({ text: 'Authenticating with GitHub...', type: 'info' });
         try {
-          await loginWithGithub(codeParam || 'mock_code', mockParam === 'true');
+          if (tokenParam) {
+            await loginWithToken(tokenParam);
+          } else {
+            await loginWithGithub('mock_code', true);
+          }
           setMessage({ text: 'GitHub Authentication successful!', type: 'success' });
           setTimeout(() => navigate('/dashboard'), 1000);
         } catch (error) {

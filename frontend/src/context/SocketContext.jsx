@@ -18,7 +18,7 @@ export const SocketProvider = ({ children }) => {
     }
 
     // Connect to Socket.io backend
-    const socketInstance = io('http://localhost:5090');
+    const socketInstance = io(import.meta.env.VITE_API_URL || 'http://localhost:5090');
     setSocket(socketInstance);
 
     socketInstance.on('connect', () => {

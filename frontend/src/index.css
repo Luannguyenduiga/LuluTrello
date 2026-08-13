@@ -85,6 +85,11 @@ input, textarea, select {
   width: 100%;
 }
 
+select option {
+  background: #1f2937;
+  color: var(--text-primary);
+}
+
 input::placeholder, textarea::placeholder {
   color: rgba(236, 236, 236, 0.938); /* Bạn có thể đổi màu tùy thích ở đây, ví dụ: var(--text-muted) hoặc mã màu #888 */
 }

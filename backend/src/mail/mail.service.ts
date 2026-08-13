@@ -46,4 +46,26 @@ export class MailService implements OnModuleInit {
       html: `<p>Your verification code is <strong style="font-size:20px">${code}</strong>.</p><p>It expires in 10 minutes.</p>`,
     });
   }
+
+  async sendBoardInvitationEmail(
+    email: string,
+    boardName: string,
+    invitedBy: string,
+    role: string,
+  ): Promise<void> {
+    if (!this.transporter) {
+      this.logger.log(`SMTP not configured - Invitation email for ${email} to board "${boardName}" would be sent.`);
+      return;
+    }
+
+    await this.transporter.sendMail({
+      from: this.config.get<string>('SMTP_FROM') || this.config.get<string>('SMTP_USER'),
+      to: email,
+      subject: `Invitation to join Trello board: ${boardName}`,
+      text: `Hello, you have been invited to join the board "${boardName}" as a ${role} by ${invitedBy}. Please log in to accept the invitation.`,
+      html: `<p>Hello,</p>
+             <p>You have been invited to join the Trello board <strong>${boardName}</strong> as a <strong>${role}</strong> by <strong>${invitedBy}</strong>.</p>
+             <p>Please log in to <a href="${this.config.get<string>('BASE_URL')}">Trello</a> to accept the invitation.</p>`,
+    });
+  }
 }
