@@ -1,0 +1,6 @@
+[build]
+  command = "pnpm --filter frontend... run build"
+  publish = "frontend/dist"
+
+[build.environment]
+  SECRETS_SCAN_ENABLED = "false"
