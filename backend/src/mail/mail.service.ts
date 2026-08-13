@@ -16,13 +16,17 @@ export class MailService implements OnModuleInit {
 
     if (host && user && pass) {
       try {
+        const port = parseInt(this.config.get<string>('SMTP_PORT') || '587', 10);
         this.transporter = nodemailer.createTransport({
           host,
-          port: parseInt(this.config.get<string>('SMTP_PORT') || '587', 10),
-          secure: false,
+          port,
+          secure: port === 465,
           auth: { user, pass },
+          tls: {
+            rejectUnauthorized: false,
+          },
         });
-        this.logger.log('Nodemailer SMTP transporter configured.');
+        this.logger.log(`Nodemailer SMTP transporter configured (port: ${port}, secure: ${port === 465}).`);
       } catch (error: any) {
         this.logger.error(`Failed to configure SMTP transporter: ${error.message}`);
       }
