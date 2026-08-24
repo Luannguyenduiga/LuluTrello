@@ -5,11 +5,13 @@ import { AppController } from './app.controller';
 import { FirestoreModule } from './common/firestore/firestore.module';
 import { RealtimeModule } from './common/realtime/realtime.module';
 import { MailModule } from './mail/mail.module';
+import { ZaloModule } from './zalo/zalo.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { BoardsModule } from './boards/boards.module';
 import { CardsModule } from './cards/cards.module';
 import { TasksModule } from './tasks/tasks.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -23,6 +25,7 @@ import { TasksModule } from './tasks/tasks.module';
     FirestoreModule,
     RealtimeModule,
     MailModule,
+    ZaloModule,
     AuthModule,
     UsersModule,
     // BoardsModule before CardsModule/TasksModule: its longer invite routes
@@ -30,6 +33,7 @@ import { TasksModule } from './tasks/tasks.module';
     BoardsModule,
     CardsModule,
     TasksModule,
+    AdminModule,
   ],
   controllers: [AppController],
 })

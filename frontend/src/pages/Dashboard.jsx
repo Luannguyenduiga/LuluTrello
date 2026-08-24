@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 import { Link } from 'react-router-dom';
 // Bỏ LayoutGrid khỏi lucide-react nếu không dùng nữa
-import { Plus, Calendar, MailOpen, Check, X, FolderOpen, LogOut, User } from 'lucide-react';
+import { Plus, Calendar, MailOpen, Check, X, FolderOpen, LogOut, User, Shield } from 'lucide-react';
 
 // Sửa lại cú pháp import ảnh (Bỏ dấu ngoặc nhọn {})
 import TrelloLogo from '../assets/Trello-logo.png';
@@ -20,6 +20,7 @@ export default function Dashboard() {
   const [newBoardDesc, setNewBoardDesc] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const loadData = async () => {
     try {
@@ -41,6 +42,15 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadData();
+  }, []);
+
+  // The Admin link only appears for accounts listed in ADMIN_EMAILS; a failure
+  // here simply means "not an admin" and is not worth surfacing.
+  useEffect(() => {
+    fetchWithAuth('/admin/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setIsAdmin(Boolean(data?.isAdmin)))
+      .catch(() => setIsAdmin(false));
   }, []);
 
   // Socket notification listener for incoming invites
@@ -119,6 +129,12 @@ export default function Dashboard() {
           <span>Lulu Trello</span>
         </Link>
         <div className="header-actions">
+          {isAdmin && (
+            <Link to="/admin" className="secondary" style={{ padding: '8px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Shield style={{ width: 15, height: 15 }} />
+              <span>Admin</span>
+            </Link>
+          )}
           <Link to="/profile" className="user-badge">
             <img src={user?.avatarUrl} alt="Avatar" className="user-avatar" />
             <span>{user?.name}</span>

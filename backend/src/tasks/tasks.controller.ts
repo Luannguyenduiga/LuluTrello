@@ -33,6 +33,7 @@ import {
   JwtUser,
 } from '../common/decorators';
 import { AddCommentDto, AssignMemberDto, CreateTaskDto, UpdateTaskDto } from './dto/tasks.dto';
+import { ZaloNotifierService } from '../zalo/zalo-notifier.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
@@ -49,6 +50,8 @@ export class TasksController {
   constructor(
     private readonly firestore: FirestoreService,
     private readonly events: EventsGateway,
+    // Chat notifications are fire-and-forget: they never block or fail a request.
+    private readonly zalo: ZaloNotifierService,
   ) {}
 
   // ---- Reads: available to every role, including viewers ----
@@ -115,9 +118,13 @@ export class TasksController {
       assignedMembers: [],
       dueDate: dto.dueDate || null,
       createdAt: new Date().toISOString(),
+      // Stamped whenever a task sits in 'Done', so the evening report can count
+      // what was actually finished today rather than what is merely done.
+      completedAt: (dto.status || 'Icebox') === 'Done' ? new Date().toISOString() : null,
     });
 
     this.events.emitToBoard(boardId, 'task_created', created);
+    this.zalo.taskCreated(boardId, user.id, created);
 
     return {
       id: created.id,
@@ -138,6 +145,7 @@ export class TasksController {
     @Param('id') cardId: string,
     @Param('taskId') taskId: string,
     @Body() dto: UpdateTaskDto,
+    @CurrentUser() user: JwtUser,
     @CurrentTask() task: DocumentData,
     @CurrentBoard() board: DocumentData,
     @CurrentBoardRole() callerRole: BoardRole,
@@ -159,10 +167,17 @@ export class TasksController {
       this.assertBoardMembers(board, dto.assignedMembers);
     }
 
+    const nextStatus = dto.status !== undefined ? dto.status : task.status;
+    const wasDone = task.status === 'Done';
+    const isDone = nextStatus === 'Done';
+
     const updated = await this.firestore.update('tasks', taskId, {
       title: dto.title !== undefined ? dto.title : task.title,
       description: dto.description !== undefined ? dto.description : task.description,
-      status: dto.status !== undefined ? dto.status : task.status,
+      status: nextStatus,
+      // Set on the transition into 'Done' and cleared on the way out, so a task
+      // reopened and finished again counts on the day it was finished again.
+      completedAt: isDone ? (wasDone ? task.completedAt || null : new Date().toISOString()) : null,
       cardId: targetCardId,
       assignedMembers:
         dto.assignedMembers !== undefined ? dto.assignedMembers : task.assignedMembers || [],
@@ -172,6 +187,7 @@ export class TasksController {
     });
 
     this.events.emitToBoard(boardId, 'task_updated', updated);
+    this.zalo.taskUpdated(boardId, user.id, task, updated);
 
     return { id: updated.id, cardId: updated.cardId };
   }
@@ -180,9 +196,15 @@ export class TasksController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @BoardRoles(...BOARD_MANAGERS)
   @UseGuards(TaskInBoardGuard)
-  async deleteTask(@Param('boardId') boardId: string, @Param('taskId') taskId: string) {
+  async deleteTask(
+    @Param('boardId') boardId: string,
+    @Param('taskId') taskId: string,
+    @CurrentUser() user: JwtUser,
+    @CurrentTask() task: DocumentData,
+  ) {
     await this.firestore.delete('tasks', taskId);
     this.events.emitToBoard(boardId, 'task_deleted', { id: taskId });
+    this.zalo.taskDeleted(boardId, user.id, task);
   }
 
   @Post(':taskId/assign')
@@ -192,6 +214,7 @@ export class TasksController {
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
     @Body() dto: AssignMemberDto,
+    @CurrentUser() user: JwtUser,
     @CurrentTask() task: DocumentData,
     @CurrentBoard() board: DocumentData,
   ) {
@@ -204,6 +227,7 @@ export class TasksController {
     }
 
     this.events.emitToBoard(boardId, 'task_assignee_added', { taskId, memberId: dto.memberId });
+    this.zalo.memberAssigned(boardId, user.id, task, dto.memberId);
     return { taskId, memberId: dto.memberId };
   }
 
@@ -215,6 +239,7 @@ export class TasksController {
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
     @Param('memberId') memberId: string,
+    @CurrentUser() user: JwtUser,
     @CurrentTask() task: DocumentData,
   ) {
     const current: string[] = task.assignedMembers || [];
@@ -222,6 +247,7 @@ export class TasksController {
     await this.firestore.update('tasks', taskId, { assignedMembers: assigned });
 
     this.events.emitToBoard(boardId, 'task_assignee_removed', { taskId, memberId });
+    this.zalo.memberUnassigned(boardId, user.id, task, memberId);
   }
 
   @Post(':taskId/attachments')
@@ -265,6 +291,7 @@ export class TasksController {
     await this.firestore.update('tasks', taskId, { attachments });
 
     this.events.emitToBoard(boardId, 'task_updated', { id: taskId });
+    this.zalo.attachmentAdded(boardId, req.user?.id, task, file.originalname);
     return newAttachment;
   }
 
@@ -326,6 +353,7 @@ export class TasksController {
     await this.firestore.update('tasks', taskId, { comments });
 
     this.events.emitToBoard(boardId, 'task_updated', { id: taskId });
+    this.zalo.commentAdded(boardId, user.id, task, dto.text);
     return newComment;
   }
 

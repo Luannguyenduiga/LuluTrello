@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import BoardDetail from './pages/BoardDetail';
 import Profile from './pages/Profile';
 import Landing from './pages/Landing';
+import Admin from './pages/Admin';
 
 // Helper component to guard authenticated routes
 function ProtectedRoute({ children }) {
@@ -59,6 +60,16 @@ function AppContent() {
               <Profile />
             </ProtectedRoute>
           } 
+        />
+
+        {/* The page itself checks ADMIN_EMAILS membership and explains a refusal */}
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute>
+              <Admin />
+            </ProtectedRoute>
+          }
         />
 
         {/* Fallback */}
