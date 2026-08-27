@@ -15,9 +15,10 @@ async function bootstrap() {
   app.use('/uploads', express.static(join(__dirname, '..', 'uploads')));
 
   const config = app.get(ConfigService);
-  const clientUrl = (
-    config.get<string>('CLIENT_URL') || 'http://localhost:5173'
-  ).replace(/\/+$/, '');
+  const clientUrl = (config.get<string>('CLIENT_URL') || 'http://localhost:5173').replace(
+    /\/+$/,
+    '',
+  );
 
   app.enableCors({
     // The deployed SPA plus the local Vite dev/preview servers; nothing else.
