@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
-import { ArrowLeft, Plus, Users, Trash, Edit3, Settings, Check, AlertCircle, PlusCircle, UserPlus, UserMinus, Calendar, Info } from 'lucide-react';
+import { ArrowLeft, Plus, Users, Trash, Edit3, Settings, Check, AlertCircle, PlusCircle, UserPlus, UserMinus, Calendar, Info, Presentation } from 'lucide-react';
 import TaskModal from '../components/TaskModal';
+import DeckModal from '../components/DeckModal';
 
 const Github = (props) => (
   <svg
@@ -48,6 +49,8 @@ export default function BoardDetail() {
   const [showAddCard, setShowAddCard] = useState(false);
   const [newCardName, setNewCardName] = useState('');
   const [showEditBoard, setShowEditBoard] = useState(false);
+  const [showDeckModal, setShowDeckModal] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [editBoardName, setEditBoardName] = useState('');
   const [editBoardDesc, setEditBoardDesc] = useState('');
 
@@ -82,6 +85,9 @@ export default function BoardDetail() {
   const isOwner = myRole === 'owner';
   const canManageBoard = myRole === 'owner' || myRole === 'leader';  // board settings
   const canEditContent = canManageBoard || myRole === 'member';      // cards & tasks
+  // Mirrors SlidesAccessGuard: whoever manages the board, plus the administrators
+  // in ADMIN_EMAILS. Members may upload the sources but not build the deck.
+  const canBuildDeck = canManageBoard || isAdmin;
 
   // Mirrors the server rules in boards.service.removeMember, so the UI never
   // offers a button that the API would answer with a 400 or 403.
@@ -151,6 +157,15 @@ export default function BoardDetail() {
   useEffect(() => {
     loadBoardData();
   }, [boardId]);
+
+  // Whether this account is listed in ADMIN_EMAILS, which is what lets someone
+  // other than the owner build a deck. A failure here just means "not an admin".
+  useEffect(() => {
+    fetchWithAuth('/admin/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setIsAdmin(Boolean(data?.isAdmin)))
+      .catch(() => setIsAdmin(false));
+  }, []);
 
   // Close the member dropdown when clicking outside of it or pressing Escape
   useEffect(() => {
@@ -595,6 +610,15 @@ export default function BoardDetail() {
             </button>
           )}
 
+          {/* Members may upload the attachments; the board's managers and the
+              administrators turn them into a slide deck */}
+          {canBuildDeck && (
+            <button onClick={() => setShowDeckModal(true)} className="secondary" style={{ padding: '8px 12px', fontSize: '12px' }} title="Tạo slide .pptx từ tệp đính kèm của bảng">
+              <Presentation style={{ width: 14, height: 14 }} />
+              Slides
+            </button>
+          )}
+
           {canManageBoard && (
             <button onClick={() => setShowEditBoard(true)} className="secondary" style={{ padding: '8px 12px' }} title="Workspace settings">
               <Settings style={{ width: 15, height: 15 }} />
@@ -862,6 +886,15 @@ export default function BoardDetail() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Slide deck builder: the board's attachments in, a .pptx out */}
+      {showDeckModal && (
+        <DeckModal
+          boardId={boardId}
+          boardName={board?.name || ''}
+          onClose={() => setShowDeckModal(false)}
+        />
       )}
 
       {/* Selected Task Details Modal */}

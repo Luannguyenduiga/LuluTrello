@@ -25,3 +25,6 @@ dist-ssr
 
 
 *.env
+
+# Task attachments written by the upload route - runtime data, not source
+backend/uploads/

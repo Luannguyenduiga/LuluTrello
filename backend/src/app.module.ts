@@ -11,6 +11,7 @@ import { UsersModule } from './users/users.module';
 import { BoardsModule } from './boards/boards.module';
 import { CardsModule } from './cards/cards.module';
 import { TasksModule } from './tasks/tasks.module';
+import { SlidesModule } from './slides/slides.module';
 import { AdminModule } from './admin/admin.module';
 
 @Module({
@@ -33,6 +34,7 @@ import { AdminModule } from './admin/admin.module';
     BoardsModule,
     CardsModule,
     TasksModule,
+    SlidesModule,
     AdminModule,
   ],
   controllers: [AppController],

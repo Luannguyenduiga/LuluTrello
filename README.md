@@ -22,6 +22,7 @@ Lulu Trello is a premium, real-time Kanban Board Management application featurin
 * **GitHub Sign-In**: Log in with a GitHub account through OAuth, alongside the OTP flow.
 * **Deadlines & Google Calendar**: Give a task a deadline, see it on the board (overdue tasks turn red), and push it to Google Calendar with the assignees added as guests.
 * **Admin Console**: A `/admin` page for whoever is listed in `ADMIN_EMAILS` — system-wide numbers, every user, board and task in one place, and an operations tab for the Zalo bot. See [Admin console](#-admin-console) below.
+* **Slide Decks from Attachments**: The board owner, a leader or an administrator picks files the team has uploaded, and the app reads them and writes a `.pptx` — the way NotebookLM builds a deck out of sources. See [Slide decks](#-slide-decks-from-attachments) below.
 * **Zalo Assistant**: A bot that posts every task change into a Zalo group and sends a progress report there at 20:00 every evening. See [Zalo assistant](#-zalo-assistant) below.
 
 ---
@@ -56,6 +57,7 @@ TrelloApplication/ (Root Workspace)
         │   └── realtime/    # EventsGateway (socket.io)
         ├── auth/            # OTP sign-in + GitHub OAuth
         ├── users/  boards/  cards/  tasks/
+        ├── slides/          # Attachments -> outline -> .pptx
         ├── admin/           # Admin console API, gated by ADMIN_EMAILS
         ├── mail/            # Nodemailer client
         └── zalo/            # Zalo bot: activity notifier, 20:00 report, Q&A
@@ -140,15 +142,15 @@ the failure is logged and the API request that triggered it still succeeds.
 Free, instant, and impossible to hallucinate, because they are computed from the
 data rather than generated:
 
-| Ask it | It answers with |
-| --- | --- |
-| "báo cáo tiến độ" | the same digest the 20:00 report sends |
+| Ask it                     | It answers with                                       |
+| -------------------------- | ----------------------------------------------------- |
+| "báo cáo tiến độ"     | the same digest the 20:00 report sends                |
 | "có gì quá hạn không" | every open task past its deadline, most overdue first |
-| "sắp đến hạn gì" | tasks due within three days |
-| "hôm nay có gì mới" | what was created and finished today |
-| "có những bảng nào" | each board with its task count and completion |
-| "việc của Gia Bảo" | that person's open tasks (short names work too) |
-| "ai đang làm Fix login" | who a named task is assigned to |
+| "sắp đến hạn gì"      | tasks due within three days                           |
+| "hôm nay có gì mới"    | what was created and finished today                   |
+| "có những bảng nào"    | each board with its task count and completion         |
+| "việc của Gia Bảo"      | that person's open tasks (short names work too)       |
+| "ai đang làm Fix login"  | who a named task is assigned to                       |
 
 Anything else is passed to **Gemini** together with the current board data, so
 "nhóm mình đang nghẽn ở khâu nào" gets a real answer. Set `GEMINI_API_KEY`
@@ -175,7 +177,6 @@ but like the 20:00 timer, the listener only runs while the server is awake.
    ```bash
    curl -H "x-zalo-secret: $ZALO_ADMIN_SECRET" http://localhost:5090/zalo/updates
    ```
-
 4. Restart the server and confirm the wiring:
 
    ```bash
@@ -188,14 +189,14 @@ but like the 20:00 timer, the listener only runs while the server is awake.
 Every route below requires the `x-zalo-secret` header to match
 `ZALO_ADMIN_SECRET`; with that variable empty the routes stay closed.
 
-| Route | Purpose |
-| --- | --- |
-| `GET /zalo/status` | Token validity, target chat, and when the next report runs |
-| `GET /zalo/updates` | Pending updates plus the chat ids seen in them |
-| `POST /zalo/test` | Send a test message (`{"text":"...","chatId":"..."}`) |
-| `POST /zalo/ask` | The answer to a question (`{"question":"..."}`) without posting it |
-| `GET /zalo/report/preview` | The report as it would be sent right now, without sending |
-| `POST /zalo/report/run` | Build and send the report immediately |
+| Route                        | Purpose                                                              |
+| ---------------------------- | -------------------------------------------------------------------- |
+| `GET /zalo/status`         | Token validity, target chat, and when the next report runs           |
+| `GET /zalo/updates`        | Pending updates plus the chat ids seen in them                       |
+| `POST /zalo/test`          | Send a test message (`{"text":"...","chatId":"..."}`)              |
+| `POST /zalo/ask`           | The answer to a question (`{"question":"..."}`) without posting it |
+| `GET /zalo/report/preview` | The report as it would be sent right now, without sending            |
+| `POST /zalo/report/run`    | Build and send the report immediately                                |
 
 > [!IMPORTANT]
 > The 20:00 schedule is an in-process timer, so it only fires while the server is
@@ -243,6 +244,75 @@ machine callers such as an external scheduler.
 
 ---
 
+## 🎞️ Slide Decks from Attachments
+
+Everyone who can edit a board may upload files to a task. The people who manage
+it — **its owner and its leaders** — plus **anyone listed in `ADMIN_EMAILS`**, can
+then turn a selection of those files into a PowerPoint deck, the way NotebookLM
+builds a deck out of the sources you give it. The button sits in the board
+header, next to the workspace settings.
+
+```text
+attachments on the board  ->  text extracted  ->  Gemini writes an outline
+                                                        |
+                     .pptx downloaded  <-  outline reviewed and edited here
+```
+
+1. **Pick the sources.** Every attachment on the board is listed under the task
+   it belongs to. Files whose text cannot be read — images, archives, `.doc` —
+   are shown but cannot be selected. Up to 20 sources per deck.
+2. **Set the brief.** A title (or let the model choose one), how many slides,
+   Vietnamese or English, and optionally who the audience is.
+3. **Review the outline.** Titles and bullets come back editable, one bullet per
+   line, with the speaker notes underneath. Regenerating is an explicit button,
+   so downloading never quietly rewrites what you just edited.
+4. **Download the `.pptx`.** Rendered server-side with `pptxgenjs`, in the app’s
+   own colours, with speaker notes attached and a closing slide listing every
+   file the deck was built from.
+
+### What it can read
+
+| Format | Read with | Notes |
+| --- | --- | --- |
+| `.pdf` | `pdf-parse` | Page markers are stripped before the text is used |
+| `.docx` | `mammoth` | Legacy `.doc` is **not** supported |
+| `.txt` `.md` `.csv` `.json` `.log` | read as UTF-8 | |
+
+Each file contributes at most 20 000 characters and a whole deck at most 90 000,
+so one long PDF cannot crowd out the other sources. A file that fails to parse is
+reported as a warning on the review screen; the remaining sources still produce a
+deck.
+
+### Model
+
+The outline is written by Gemini, using the same `GEMINI_API_KEY` and
+`GEMINI_MODEL` as the Zalo assistant, and the model is told to use nothing but
+the source text. **Without a key the feature still works**: the sources are cut
+into slides mechanically — paragraphs become bullets, a short line on its own
+becomes the slide title — and the review screen says so. Rough, but every word
+on the slide came from the documents.
+
+### Routes
+
+All three require a session, board membership, and either the `owner` or
+`leader` role on that board or an email in `ADMIN_EMAILS`. Members and viewers
+are left out: they may upload the files, but a deck speaks for the whole board.
+Sources are resolved from the board in the URL, so an attachment id belonging to
+another board is refused.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /boards/:boardId/slides/sources` | The board’s attachments, and whether a model is configured |
+| `POST /boards/:boardId/slides/outline` | Reads the chosen files and returns the outline (one model call) |
+| `POST /boards/:boardId/slides/pptx` | Renders the reviewed outline and returns the file |
+
+> [!NOTE]
+> Attachments live on the server’s own disk (`backend/uploads`), which most hosts
+> wipe on redeploy — Render’s free tier included. A file uploaded before the last
+> deploy is listed but cannot be read, and says so.
+
+---
+
 ## ⚙️ Backend Configuration (`.env`)
 
 Create or update the [.env](.env) file in the **workspace root** to configure the database, email services, and OAuth keys:
@@ -275,7 +345,7 @@ ZALO_ADMIN_SECRET=a_long_random_string
 ZALO_REPORT_TIME=20:00
 ZALO_TIMEZONE=Asia/Ho_Chi_Minh
 
-# Free-form answers in the group (optional)
+# Free-form answers in the group, and the slide outlines (optional)
 GEMINI_API_KEY=your_google_ai_studio_key
 ```
 
