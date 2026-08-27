@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowRight, Check, Shield, Sparkles, LayoutGrid } from 'lucide-react';
 import TrelloLogo from '../assets/Trello-logo.png';
 import TacoMascot from '../components/TacoMascot';
+import MaintenanceNotice from '../components/MaintenanceNotice';
 
 const Github = (props) => (
   <svg
@@ -26,7 +27,10 @@ const Github = (props) => (
 export default function Landing() {
   return (
     <div className="app-layout" style={{ minHeight: '100vh', justifyContent: 'center' }}>
-      
+
+      {/* Greets the first visit of the tab, then gets out of the way */}
+      <MaintenanceNotice />
+
       {/* Navbar header */}
       <header className="app-header" style={{ position: 'absolute', top: 0, left: 0, right: 0, background: 'transparent', borderBottom: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -42,7 +46,7 @@ export default function Landing() {
 
       {/* Hero Section */}
       <main style={{ maxWidth: '1200px', width: '100%', margin: '120px auto 60px', padding: '0 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '32px' }}>
-        
+
         {/* Responsive Hero Section */}
         <div className="hero-grid">
           <div className="hero-left">

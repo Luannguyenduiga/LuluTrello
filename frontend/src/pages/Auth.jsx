@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Mail, ShieldCheck, RefreshCw, Layers } from 'lucide-react';
+import MaintenanceNotice, { EMAIL_AUTH_MAINTENANCE } from '../components/MaintenanceNotice';
 
 const Github = (props) => (
   <svg
@@ -144,6 +145,9 @@ export default function Auth() {
 
   return (
     <div className="auth-container">
+      {/* Overlays the page on arrival; dismissing it leaves the form untouched */}
+      <MaintenanceNotice />
+
       <div className="auth-card glass-panel">
         <div className="auth-logo">
           <Layers style={{ width: 32, height: 32, color: 'var(--accent-primary)' }} />
@@ -226,7 +230,14 @@ export default function Auth() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <button type="button" onClick={handleGithubClick} className="secondary" style={{ width: '100%' }}>
+          {/* While email is down GitHub is the only route in, so it takes the
+              primary styling that "Send Verification Code" normally holds. */}
+          <button
+            type="button"
+            onClick={handleGithubClick}
+            className={EMAIL_AUTH_MAINTENANCE ? 'primary' : 'secondary'}
+            style={{ width: '100%' }}
+          >
             <Github style={{ width: 16, height: 16 }} />
             Sign in with GitHub
           </button>
