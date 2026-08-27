@@ -12,7 +12,8 @@
     "start": "node dist/main.js",
     "lint": "eslint \"src/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" --fix",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "mail:check": "node scripts/mail-check.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

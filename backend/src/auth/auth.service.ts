@@ -4,6 +4,7 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -58,11 +59,29 @@ export class AuthService {
       attempts: 0,
     });
 
+    let delivered: boolean;
     try {
-      await this.mail.sendVerificationEmail(normalizedEmail, code);
+      delivered = await this.mail.sendVerificationEmail(normalizedEmail, code);
     } catch (error: any) {
       this.logger.error(`Failed to send verification code: ${error.message}`);
       throw new InternalServerErrorException('Failed to send verification code');
+    }
+
+    if (!delivered) {
+      // No transport is configured. In production that must surface as a
+      // failure: answering 200 here is what makes a broken deployment look
+      // healthy while the code only ever reaches the server log. Locally the
+      // logged code is the intended development path, so the call still
+      // succeeds - but it says so rather than claiming an email was sent.
+      if (this.config.get<string>('NODE_ENV') === 'production') {
+        throw new ServiceUnavailableException(
+          'Email delivery is not configured on the server, so no code could be sent',
+        );
+      }
+      return {
+        success: true,
+        message: 'Mail is not configured - the verification code was written to the server log',
+      };
     }
 
     return { success: true, message: 'Verification code sent' };
@@ -184,7 +203,7 @@ export class AuthService {
         avatarUrl: avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${handle}`,
         githubToken: accessToken,
         createdAt: new Date().toISOString(),
-        role: 'user'
+        role: 'user',
       });
     }
 
@@ -196,9 +215,10 @@ export class AuthService {
 
   /** Builds the URL the OAuth callback redirects the browser back to */
   buildOauthRedirectUrl(user: DocumentData): string {
-    const clientUrl = (
-      this.config.get<string>('CLIENT_URL') || 'http://localhost:5173'
-    ).replace(/\/+$/, '');
+    const clientUrl = (this.config.get<string>('CLIENT_URL') || 'http://localhost:5173').replace(
+      /\/+$/,
+      '',
+    );
     return `${clientUrl}/auth?token=${encodeURIComponent(this.signToken(user))}`;
   }
 
