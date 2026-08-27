@@ -3,7 +3,6 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { FirestoreService, DocumentData } from '../common/firestore/firestore.service';
@@ -16,14 +15,15 @@ import {
   ResolveInvitationDto,
   UpdateBoardDto,
 } from './dto/boards.dto';
-import { MailService } from '../mail/mail.service';
+import { ZaloNotifierService } from '../zalo/zalo-notifier.service';
 
 @Injectable()
 export class BoardsService {
   constructor(
     private readonly firestore: FirestoreService,
     private readonly events: EventsGateway,
-    private readonly mailService: MailService,
+    // ZaloModule is @Global(), so this needs no import in BoardsModule
+    private readonly zalo: ZaloNotifierService,
   ) {}
 
   async createBoard(dto: CreateBoardDto, user: JwtUser) {
@@ -204,22 +204,19 @@ export class BoardsService {
       });
     }
 
-    // Send board invitation email if email address is available
-    if (inviteeEmail) {
-      try {
-        const inviter = await this.firestore.findById('users', user.id);
-        const inviterName = inviter ? inviter.name : 'A board member';
-        await this.mailService.sendBoardInvitationEmail(
-          inviteeEmail,
-          board.name,
-          inviterName,
-          invitedRole,
-        );
-      } catch (err: any) {
-        new Logger('BoardsService').error(`Failed to send invitation email to ${inviteeEmail}: ${err.message}`);
-      }
-    }
+    // Announced in the Zalo group. Fire-and-forget by design: the invitation
+    // already exists, so a chat failure must not turn this into a failed request.
+    this.zalo.memberInvited(
+      board.id,
+      user.id,
+      { userId: finalMemberId, email: inviteeEmail },
+      invitedRole,
+    );
 
+    // No invitation email is sent: the Zalo group is the only announcement.
+    // Somebody invited by email alone therefore hears about it in the group
+    // rather than in their inbox - they still get the pending invitation on
+    // the dashboard once they sign in.
     return { success: true, invitation };
   }
 

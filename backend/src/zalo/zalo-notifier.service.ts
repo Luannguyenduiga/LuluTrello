@@ -10,6 +10,14 @@ const DEFAULT_BATCH_MS = 15_000;
 /** A busy board should not produce an endless message; flush early instead. */
 const MAX_LINES_PER_MESSAGE = 25;
 
+/** Board roles read as jargon in a chat message, so they are spelled out. */
+const ROLE_LABELS: Record<string, string> = {
+  owner: 'Trùm bang',
+  leader: 'đại ca nhóm',
+  member: 'đàn em',
+  viewer: 'người xem',
+};
+
 interface BoardQueue {
   lines: string[];
   timer: NodeJS.Timeout;
@@ -137,6 +145,27 @@ export class ZaloNotifierService implements OnModuleDestroy {
     void this.push(boardId, actorId, async (who) => [
       `🚫 ${who} đã gỡ ${await this.nameOf(memberId)} khỏi "${task.title}"`,
     ]);
+  }
+
+  /**
+   * An invitation was created. The invitee is identified by account when they
+   * already have one and by bare email when they do not - a board can be
+   * offered to somebody who has never signed up, and the group should still see
+   * who was asked.
+   */
+  memberInvited(
+    boardId: string,
+    actorId: string | undefined,
+    invitee: { userId?: string; email?: string },
+    role: string,
+  ): void {
+    void this.push(boardId, actorId, async (who) => {
+      const target = invitee.userId
+        ? await this.nameOf(invitee.userId)
+        : invitee.email || 'một người dùng';
+      const label = ROLE_LABELS[role] || role;
+      return [`✉️ ${who} đã mời ${target} tham gia bảng – vai trò ${label}`];
+    });
   }
 
   commentAdded(
