@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
+import FilePreviewModal from "./FilePreviewModal";
 import {
   X,
   User,
@@ -70,6 +71,8 @@ export default function TaskModal({
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [fileInputKey, setFileInputKey] = useState(Date.now());
   const [commentText, setCommentText] = useState("");
+  // The attachment currently open in the viewer, or null.
+  const [previewFile, setPreviewFile] = useState(null);
 
   useEffect(() => {
     loadTaskDetails();
@@ -691,15 +694,23 @@ export default function TaskModal({
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
                           <span style={{ fontSize: '13px', fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            <a 
-                              href={fileObj.url} 
-                              style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title="Click to view inline"
+                            {/* Opens the in-app viewer: a plain link would only
+                                download anything the browser cannot render. */}
+                            <button
+                              type="button"
+                              onClick={() => setPreviewFile(fileObj)}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                padding: 0,
+                                font: 'inherit',
+                                cursor: 'pointer',
+                                color: 'var(--accent-primary)',
+                              }}
+                              title="Xem tệp"
                             >
                               {fileObj.name}
-                            </a>
+                            </button>
                             {fileObj.size && (
                               <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: '6px' }}>
                                 ({(fileObj.size / 1024).toFixed(1)} KB) · <a href={fileObj.url} download={fileObj.name} style={{ color: 'var(--accent-primary)', textDecoration: 'underline', fontSize: '11px' }}>Download</a>
@@ -726,11 +737,13 @@ export default function TaskModal({
 
                 {/**related-docs */}
                 <div>
+                  {/* Everything FilePreviewModal can display, so anything
+                      uploaded here can also be opened here. */}
                   <input
                     key={fileInputKey}
                     type="file"
                     multiple
-                    accept=".pdf,.doc,.docx,.txt"
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.ppt,.pptx,.odt,.ods,.txt,.md,.json,.xml,.zip,image/*,video/*,audio/*"
                     onChange={handleRelatedDocsChange}
                   />
                 </div>
@@ -1048,6 +1061,19 @@ export default function TaskModal({
           </div>
         </div>
       </div>
+
+      {/* Inside the overlay rather than beside it: .modal-overlay is a
+          full-viewport fixed box, so the viewer still covers the screen, and
+          its backdrop click cannot reach this modal's own onClose. */}
+      {previewFile && (
+        <FilePreviewModal
+          boardId={boardId}
+          cardId={cardId}
+          taskId={taskId}
+          file={previewFile}
+          onClose={() => setPreviewFile(null)}
+        />
+      )}
     </div>
   );
 }

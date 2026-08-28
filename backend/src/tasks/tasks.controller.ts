@@ -34,6 +34,7 @@ import {
 } from '../common/decorators';
 import { AddCommentDto, AssignMemberDto, CreateTaskDto, UpdateTaskDto } from './dto/tasks.dto';
 import { ZaloNotifierService } from '../zalo/zalo-notifier.service';
+import { PreviewService } from '../preview/preview.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
@@ -52,6 +53,7 @@ export class TasksController {
     private readonly events: EventsGateway,
     // Chat notifications are fire-and-forget: they never block or fail a request.
     private readonly zalo: ZaloNotifierService,
+    private readonly preview: PreviewService,
   ) {}
 
   // ---- Reads: available to every role, including viewers ----
@@ -248,6 +250,27 @@ export class TasksController {
 
     this.events.emitToBoard(boardId, 'task_assignee_removed', { taskId, memberId });
     this.zalo.memberUnassigned(boardId, user.id, task, memberId);
+  }
+
+  /**
+   * A displayable rendering of one attachment: HTML for the office formats the
+   * browser cannot open by itself, a URL for the ones it can. A read, so every
+   * role including viewers may ask for it.
+   */
+  @Get(':taskId/attachments/:attachmentId/preview')
+  @UseGuards(TaskInBoardGuard)
+  async previewAttachment(
+    @Req() req: any,
+    @Param('attachmentId') attachmentId: string,
+    @CurrentTask() task: DocumentData,
+  ) {
+    const attachment = (task.attachments || []).find((att: any) => att.id === attachmentId);
+    if (!attachment) {
+      throw new NotFoundException('Attachment not found');
+    }
+    // The host is taken from this request rather than from the stored URL, which
+    // still carries whatever host the file happened to be uploaded through.
+    return this.preview.build(attachment, `${req.protocol}://${req.get('host')}`);
   }
 
   @Post(':taskId/attachments')

@@ -3,8 +3,10 @@ import { TasksController } from './tasks.controller';
 import { BoardAccessGuard } from '../common/guards/board-access.guard';
 import { CardInBoardGuard } from '../common/guards/card-in-board.guard';
 import { TaskInBoardGuard } from '../common/guards/task-in-board.guard';
+import { PreviewModule } from '../preview/preview.module';
 
 @Module({
+  imports: [PreviewModule],
   controllers: [TasksController],
   providers: [BoardAccessGuard, CardInBoardGuard, TaskInBoardGuard],
 })
