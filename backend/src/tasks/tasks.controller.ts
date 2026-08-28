@@ -35,6 +35,7 @@ import {
 import { AddCommentDto, AssignMemberDto, CreateTaskDto, UpdateTaskDto } from './dto/tasks.dto';
 import { ZaloNotifierService } from '../zalo/zalo-notifier.service';
 import { PreviewService } from '../preview/preview.service';
+import { StorageService } from '../storage/storage.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
@@ -54,6 +55,7 @@ export class TasksController {
     // Chat notifications are fire-and-forget: they never block or fail a request.
     private readonly zalo: ZaloNotifierService,
     private readonly preview: PreviewService,
+    private readonly storage: StorageService,
   ) {}
 
   // ---- Reads: available to every role, including viewers ----
@@ -288,26 +290,36 @@ export class TasksController {
       throw new BadRequestException('No file uploaded');
     }
 
-    const uploadDir = join(__dirname, '..', '..', 'uploads');
-    if (!existsSync(uploadDir)) {
-      mkdirSync(uploadDir, { recursive: true });
+    const fileId = this.firestore.generateId();
+    const parts = String(file.originalname).split('.');
+    const extension = parts.length > 1 ? parts.pop()! : '';
+
+    // R2 when it is configured, the local disk otherwise so a dev machine needs
+    // no credentials. The record says which: `storageKey` means R2, a `/uploads`
+    // `url` means the disk - and every attachment uploaded before R2 existed is
+    // of the second kind, so both have to keep working.
+    let stored: { storageKey?: string; url?: string };
+    if (this.storage.enabled) {
+      const key = this.storage.key(taskId, fileId, extension);
+      await this.storage.put(key, file.buffer, file.mimetype);
+      stored = { storageKey: key };
+    } else {
+      const uploadDir = join(__dirname, '..', '..', 'uploads');
+      if (!existsSync(uploadDir)) {
+        mkdirSync(uploadDir, { recursive: true });
+      }
+      const filename = `${fileId}${extension ? `.${extension}` : ''}`;
+      writeFileSync(join(uploadDir, filename), file.buffer);
+      stored = { url: `${req.protocol}://${req.get('host')}/uploads/${filename}` };
     }
 
-    const fileId = this.firestore.generateId();
-    const extension = file.originalname.split('.').pop() || '';
-    const filename = `${fileId}.${extension}`;
-    const filePath = join(uploadDir, filename);
-
-    writeFileSync(filePath, file.buffer);
-
     const attachments = task.attachments || [];
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
     const newAttachment = {
       id: fileId,
       name: file.originalname,
       size: file.size,
       type: file.mimetype,
-      url: `${baseUrl}/uploads/${filename}`,
+      ...stored,
       uploadedAt: new Date().toISOString(),
     };
     attachments.push(newAttachment);
@@ -330,8 +342,19 @@ export class TasksController {
   ) {
     const current = task.attachments || [];
     const target = current.find((att: any) => att.id === attachmentId);
-    if (target) {
-      const filename = target.url.split('/').pop();
+    if (target?.storageKey) {
+      try {
+        await this.storage.remove(target.storageKey);
+      } catch (err: any) {
+        // The record still goes; an object left behind costs a few cents a year,
+        // a delete that 500s leaves the user staring at a file they cannot remove.
+        new Logger('TasksController').error(
+          `Failed to delete R2 object: ${target.storageKey}`,
+          err.message,
+        );
+      }
+    } else if (target?.url) {
+      const filename = String(target.url).split('/').pop()!;
       const filePath = join(__dirname, '..', '..', 'uploads', filename);
       if (existsSync(filePath)) {
         try {

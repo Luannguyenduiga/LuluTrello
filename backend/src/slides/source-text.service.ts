@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { StorageService } from '../storage/storage.service';
 
 /** A task attachment, as TasksController stores it on the task document. */
 export interface SourceFile {
   id: string;
   name?: string;
   type?: string;
+  /** R2 object key. Absent on attachments uploaded before R2 was introduced. */
+  storageKey?: string;
+  /** Legacy: the public /uploads URL of a file on the server's own disk. */
   url?: string;
   size?: number;
   uploadedAt?: string | null;
@@ -47,15 +51,17 @@ interface PdfParseModule {
 /**
  * Reads the text out of the files uploaded as task attachments.
  *
- * Attachments are written to backend/uploads by TasksController and only their
- * public URL is stored on the task, so the file on disk is found the same way
- * the delete route finds it: by the last segment of that URL.
+ * Attachments live in R2 and are fetched by their object key. Records made
+ * before that move point at a file on the server's own disk instead, and are
+ * still read from there when it happens to still be present.
  */
 @Injectable()
 export class SourceTextService {
   private readonly logger = new Logger(SourceTextService.name);
 
-  /** The directory TasksController writes attachments into. */
+  constructor(private readonly storage: StorageService) {}
+
+  /** Where attachments landed before R2, and still do on an unconfigured server. */
   private get uploadDir(): string {
     return join(__dirname, '..', '..', 'uploads');
   }
@@ -106,21 +112,22 @@ export class SourceTextService {
       return fail('This file type cannot be read (PDF, DOCX and text files are supported)');
     }
 
-    const filename = String(attachment.url || '')
-      .split('/')
-      .pop();
-    if (!filename) return fail('The attachment has no stored file');
-
-    const path = join(this.uploadDir, filename);
-    if (!existsSync(path)) {
-      // Uploads live on the server's disk, which most hosts wipe on redeploy.
-      return fail(
-        'The file is no longer on the server (it may have been uploaded before a redeploy)',
-      );
+    let buffer: Buffer;
+    try {
+      const bytes = await this.bytes(attachment);
+      if (!bytes) {
+        return fail(
+          'The file is no longer stored (attachments uploaded before the move to ' +
+            'object storage were lost when the server restarted)',
+        );
+      }
+      buffer = bytes;
+    } catch (error: any) {
+      return fail(`Could not fetch this file: ${error.message}`);
     }
 
     try {
-      const raw = await this.read(kind, path);
+      const raw = await this.read(kind, buffer);
       const clean = this.tidy(raw);
       if (!clean) return fail('No readable text was found in this file');
 
@@ -138,12 +145,29 @@ export class SourceTextService {
     }
   }
 
-  private async read(kind: Exclude<SourceKind, 'unsupported'>, path: string): Promise<string> {
-    if (kind === 'text') return readFileSync(path, 'utf8');
+  /** The file's bytes, or null when nothing is stored under this record. */
+  private async bytes(attachment: SourceFile): Promise<Buffer | null> {
+    if (attachment.storageKey) {
+      if (!this.storage.enabled) throw new Error('object storage is not configured');
+      return (await this.storage.head(attachment.storageKey))
+        ? this.storage.get(attachment.storageKey)
+        : null;
+    }
+
+    const filename = String(attachment.url || '')
+      .split('/')
+      .pop();
+    if (!filename) return null;
+    const path = join(this.uploadDir, filename);
+    return existsSync(path) ? readFileSync(path) : null;
+  }
+
+  private async read(kind: Exclude<SourceKind, 'unsupported'>, buffer: Buffer): Promise<string> {
+    if (kind === 'text') return buffer.toString('utf8');
     if (kind === 'docx') {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mammoth = require('mammoth') as MammothModule;
-      const result = await mammoth.extractRawText({ buffer: readFileSync(path) });
+      const result = await mammoth.extractRawText({ buffer });
       return result?.value || '';
     }
 
@@ -152,7 +176,7 @@ export class SourceTextService {
     // start and serve every other route.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { PDFParse } = require('pdf-parse') as PdfParseModule;
-    const parser = new PDFParse({ data: new Uint8Array(readFileSync(path)) });
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
     try {
       const result = await parser.getText();
       return result.text || '';

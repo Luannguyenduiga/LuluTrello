@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AlertCircle, Download, ExternalLink, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -59,9 +59,12 @@ export default function FilePreviewModal({ boardId, cardId, taskId, file, onClos
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
-  // The preview carries the URL rebuilt against the current host; the stored one
-  // is the fallback for the errors that come back before that is known.
+  // Links come from the preview: for a file in R2 they are signed and expire in
+  // 15 minutes, so they are minted per request rather than stored on the task.
+  // `file.url` is the fallback for older attachments still served from /uploads.
   const url = preview?.url || file.url;
+  // Same file, but with a Content-Disposition that saves instead of rendering.
+  const downloadUrl = preview?.downloadUrl || url;
 
   const frame = {
     width: '100%',
@@ -130,7 +133,7 @@ export default function FilePreviewModal({ boardId, cardId, taskId, file, onClos
             <AlertCircle style={{ width: 22, height: 22, color: 'var(--accent-warning)' }} />
             <span>{preview?.note || 'Định dạng này chưa xem trước được.'}</span>
             {url && (
-              <a href={url} download={file.name} style={downloadButton}>
+              <a href={downloadUrl} download={file.name} style={downloadButton}>
                 <Download style={{ width: 14, height: 14 }} />
                 Tải tệp về
               </a>
@@ -201,7 +204,7 @@ export default function FilePreviewModal({ boardId, cardId, taskId, file, onClos
                   <ExternalLink style={{ width: 14, height: 14 }} />
                 </a>
                 <a
-                  href={url}
+                  href={downloadUrl}
                   download={file.name}
                   style={headerButton}
                   title="Tải về"

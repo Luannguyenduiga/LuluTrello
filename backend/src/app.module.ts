@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { join } from 'path';
 import { AppController } from './app.controller';
 import { FirestoreModule } from './common/firestore/firestore.module';
+import { StorageModule } from './storage/storage.module';
 import { RealtimeModule } from './common/realtime/realtime.module';
 import { MailModule } from './mail/mail.module';
 import { ZaloModule } from './zalo/zalo.module';
@@ -24,6 +25,7 @@ import { AdminModule } from './admin/admin.module';
       envFilePath: [join(__dirname, '..', '.env'), join(__dirname, '..', '..', '.env')],
     }),
     FirestoreModule,
+    StorageModule,
     RealtimeModule,
     MailModule,
     ZaloModule,

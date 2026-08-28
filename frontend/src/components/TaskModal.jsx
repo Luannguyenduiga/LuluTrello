@@ -199,6 +199,23 @@ export default function TaskModal({
     }
   };
 
+  // Files in object storage have no permanent URL - the link is signed on demand
+  // and expires - so a download asks the API for a fresh one first.
+  const handleDownloadAttachment = async (fileObj) => {
+    try {
+      const res = await fetchWithAuth(
+        `/boards/${boardId}/cards/${cardId}/tasks/${taskId}/attachments/${fileObj.id}/preview`,
+      );
+      if (!res.ok) throw new Error("Không lấy được liên kết tải về");
+      const data = await res.json();
+      const url = data.downloadUrl || data.url;
+      if (!url) throw new Error(data.note || "Tệp này không còn tải về được");
+      window.open(url, "_blank", "noopener");
+    } catch (err) {
+      alert(err.message || "Không tải được tệp");
+    }
+  };
+
   const handleRelatedDocsChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
       setSelectedFiles(Array.from(e.target.files));
@@ -713,7 +730,7 @@ export default function TaskModal({
                             </button>
                             {fileObj.size && (
                               <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginLeft: '6px' }}>
-                                ({(fileObj.size / 1024).toFixed(1)} KB) · <a href={fileObj.url} download={fileObj.name} style={{ color: 'var(--accent-primary)', textDecoration: 'underline', fontSize: '11px' }}>Download</a>
+                                ({(fileObj.size / 1024).toFixed(1)} KB) · <button type="button" onClick={() => handleDownloadAttachment(fileObj)} style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', fontSize: '11px', cursor: 'pointer', color: 'var(--accent-primary)', textDecoration: 'underline' }}>Tải về</button>
                               </span>
                             )}
                           </span>

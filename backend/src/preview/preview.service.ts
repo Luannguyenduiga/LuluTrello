@@ -1,14 +1,26 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
+import { StorageService } from '../storage/storage.service';
 
 /** A task attachment, as TasksController stores it on the task document. */
 export interface PreviewFile {
   id: string;
   name?: string;
   type?: string;
+  /** R2 object key. Absent on attachments uploaded before R2 was introduced. */
+  storageKey?: string;
+  /** Legacy: the public /uploads URL of a file on the server's own disk. */
   url?: string;
   size?: number;
+}
+
+/** Where an attachment's bytes are, once the record has been resolved. */
+interface FileSource {
+  size: number;
+  read(): Promise<Buffer>;
+  /** `url` renders in place; `downloadUrl` saves under the original name. */
+  links(): Promise<{ url: string; downloadUrl: string }>;
 }
 
 /**
@@ -27,8 +39,10 @@ export interface Preview {
   kind: PreviewKind;
   /** Set when kind is 'html': a full document, already escaped. */
   html?: string;
-  /** Set for pdf/image/video/audio: the file's public URL. */
+  /** A link the browser can open directly - signed and short-lived for R2. */
   url?: string;
+  /** The same file, but as a download rather than something to render. */
+  downloadUrl?: string;
   /** Shown above the viewer - truncation warnings, or why there is no preview. */
   note?: string;
 }
@@ -113,7 +127,9 @@ interface MammothModule {
 export class PreviewService {
   private readonly logger = new Logger(PreviewService.name);
 
-  /** The directory TasksController writes attachments into. */
+  constructor(private readonly storage: StorageService) {}
+
+  /** Where attachments landed before R2, and still do on an unconfigured server. */
   private get uploadDir(): string {
     return join(__dirname, '..', '..', 'uploads');
   }
@@ -132,60 +148,119 @@ export class PreviewService {
     const format = this.extension(name) || this.extension(attachment.url || '');
     const base: Preview = { id: attachment.id, name, format, kind: 'unsupported' };
 
+    const located = await this.locate(attachment, name, baseUrl);
+    if (!located.source) {
+      return { ...base, note: located.error };
+    }
+    const source = located.source;
+
+    // Handed to the browser as-is: no conversion, so no size ceiling either.
+    const direct = async (kind: PreviewKind): Promise<Preview> => ({
+      ...base,
+      kind,
+      ...(await source.links()),
+    });
+    if (format === 'pdf' || this.mime(attachment) === 'application/pdf') {
+      return direct('pdf');
+    }
+    if (this.isKind(attachment, format, IMAGE_EXTENSIONS, 'image/')) {
+      return direct('image');
+    }
+    if (this.isKind(attachment, format, VIDEO_EXTENSIONS, 'video/')) {
+      return direct('video');
+    }
+    if (this.isKind(attachment, format, AUDIO_EXTENSIONS, 'audio/')) {
+      return direct('audio');
+    }
+
+    // Everything below is converted rather than rendered, but the modal still
+    // offers a download, so the links come along even when there is no preview.
+    const links = await source.links();
+
+    if (LEGACY_OFFICE[format]) {
+      return {
+        ...base,
+        ...links,
+        note: `${LEGACY_OFFICE[format]} không xem trực tiếp được. Hãy tải về, hoặc lưu lại thành .docx / .xlsx / .pptx rồi tải lên lại.`,
+      };
+    }
+
+    if (source.size > MAX_CONVERT_BYTES) {
+      return {
+        ...base,
+        ...links,
+        note: `Tệp ${(source.size / 1024 / 1024).toFixed(1)} MB, quá lớn để dựng bản xem trước. Hãy tải về để mở.`,
+      };
+    }
+
+    try {
+      const buffer = await source.read();
+      return { ...base, ...links, ...(await this.convert(format, attachment, buffer)) };
+    } catch (error: any) {
+      this.logger.warn(`Could not preview "${name}": ${error.message}`);
+      return { ...base, ...links, note: `Không dựng được bản xem trước: ${error.message}` };
+    }
+  }
+
+  /**
+   * Finds the bytes behind an attachment.
+   *
+   * Two eras of record exist and both stay readable: `storageKey` means R2,
+   * while a `/uploads/...` URL is an older attachment written to the server's
+   * own disk - those are the ones that keep evaporating, hence the message.
+   */
+  private async locate(
+    attachment: PreviewFile,
+    name: string,
+    baseUrl: string,
+  ): Promise<{ source?: FileSource; error?: string }> {
+    if (attachment.storageKey) {
+      if (!this.storage.enabled) {
+        return { error: 'Máy chủ này chưa được cấu hình kho lưu trữ, không đọc được tệp.' };
+      }
+      const key = attachment.storageKey;
+      const head = await this.storage.head(key);
+      if (!head) {
+        return { error: 'Tệp không còn trong kho lưu trữ.' };
+      }
+      return {
+        source: {
+          size: head.size || attachment.size || 0,
+          read: () => this.storage.get(key),
+          links: async () => ({
+            url: await this.storage.signedUrl(key, name, 'inline'),
+            downloadUrl: await this.storage.signedUrl(key, name, 'attachment'),
+          }),
+        },
+      };
+    }
+
     // The stored URL carries the host from whenever the file was uploaded; the
     // filename is the part that matters, and the caller's host is current.
     const filename = String(attachment.url || '')
       .split('/')
       .pop();
     if (!filename) {
-      return { ...base, note: 'Tệp này không có bản lưu trên máy chủ.' };
+      return { error: 'Tệp này không có bản lưu trên máy chủ.' };
     }
 
     const path = join(this.uploadDir, filename);
     if (!existsSync(path)) {
-      // Uploads live on the server's disk, which most hosts wipe on redeploy.
       return {
-        ...base,
-        note: 'Tệp không còn trên máy chủ (có thể đã bị xoá khi deploy lại).',
+        error:
+          'Tệp không còn trên máy chủ. Các tệp tải lên trước khi chuyển sang kho lưu trữ ' +
+          'nằm trên đĩa tạm của máy chủ và đã bị xoá - hãy nhờ người tải lên gửi lại và upload lần nữa.',
       };
     }
+
     const url = `${baseUrl}/uploads/${filename}`;
-
-    // Handed to the browser as-is: no conversion, so no size ceiling either.
-    if (format === 'pdf' || this.mime(attachment) === 'application/pdf') {
-      return { ...base, kind: 'pdf', url };
-    }
-    if (this.isKind(attachment, format, IMAGE_EXTENSIONS, 'image/')) {
-      return { ...base, kind: 'image', url };
-    }
-    if (this.isKind(attachment, format, VIDEO_EXTENSIONS, 'video/')) {
-      return { ...base, kind: 'video', url };
-    }
-    if (this.isKind(attachment, format, AUDIO_EXTENSIONS, 'audio/')) {
-      return { ...base, kind: 'audio', url };
-    }
-
-    if (LEGACY_OFFICE[format]) {
-      return {
-        ...base,
-        note: `${LEGACY_OFFICE[format]} không xem trực tiếp được. Hãy tải về, hoặc lưu lại thành .docx / .xlsx / .pptx rồi tải lên lại.`,
-      };
-    }
-
-    const bytes = statSync(path).size;
-    if (bytes > MAX_CONVERT_BYTES) {
-      return {
-        ...base,
-        note: `Tệp ${(bytes / 1024 / 1024).toFixed(1)} MB, quá lớn để dựng bản xem trước. Hãy tải về để mở.`,
-      };
-    }
-
-    try {
-      return { ...base, ...(await this.convert(format, attachment, path)) };
-    } catch (error: any) {
-      this.logger.warn(`Could not preview "${name}": ${error.message}`);
-      return { ...base, note: `Không dựng được bản xem trước: ${error.message}` };
-    }
+    return {
+      source: {
+        size: statSync(path).size,
+        read: () => Promise.resolve(readFileSync(path)),
+        links: () => Promise.resolve({ url, downloadUrl: url }),
+      },
+    };
   }
 
   private mime(attachment: PreviewFile): string {
@@ -205,37 +280,37 @@ export class PreviewService {
   private async convert(
     format: string,
     attachment: PreviewFile,
-    path: string,
+    buffer: Buffer,
   ): Promise<Partial<Preview>> {
     const mime = this.mime(attachment);
 
     if (format === 'docx' || mime.includes('wordprocessingml')) {
-      return this.fromDocx(readFileSync(path));
+      return this.fromDocx(buffer);
     }
     if (format === 'pptx' || mime.includes('presentationml')) {
-      return this.fromPptx(readFileSync(path));
+      return this.fromPptx(buffer);
     }
     if (
       SHEET_EXTENSIONS.includes(format) ||
       mime.includes('spreadsheetml') ||
       mime === 'text/csv'
     ) {
-      return this.fromSheet(readFileSync(path));
+      return this.fromSheet(buffer);
     }
     if (WEB_EXTENSIONS.includes(format) || mime === 'text/html') {
       // Rendered as authored, but inside the client's sandboxed iframe: scripts,
       // forms and navigation are all blocked there.
       return {
         kind: 'html',
-        html: readFileSync(path, 'utf8'),
+        html: buffer.toString('utf8'),
         note: 'Trang HTML hiển thị trong khung cách ly - script và biểu mẫu bị chặn.',
       };
     }
     if (format === 'zip') {
-      return this.fromZip(readFileSync(path));
+      return this.fromZip(buffer);
     }
     if (TEXT_EXTENSIONS.includes(format) || mime.startsWith('text/')) {
-      return this.fromText(readFileSync(path));
+      return this.fromText(buffer);
     }
 
     return {
