@@ -40,7 +40,9 @@ export class SlidesController {
   async sources(@CurrentBoard() board: DocumentData) {
     const sources = await this.slides.listSources(board.id);
     return {
-      sources,
+      // The R2 key is an internal address the picker has no use for; the
+      // browser only ever reaches an object through a signed URL.
+      sources: sources.map(({ storageKey: _key, ...source }) => source),
       readable: sources.filter((source) => source.supported).length,
       modelAvailable: this.slides.modelAvailable,
     };
