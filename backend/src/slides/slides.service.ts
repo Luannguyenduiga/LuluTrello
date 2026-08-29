@@ -12,6 +12,8 @@ export interface BoardSource {
   type: string;
   size: number;
   url: string;
+  /** R2 object key; absent on attachments uploaded before R2 existed. */
+  storageKey?: string;
   uploadedAt: string | null;
   taskId: string;
   taskTitle: string;
@@ -57,6 +59,7 @@ export class SlidesService {
           type: String(attachment.type || ''),
           size: Number(attachment.size || 0),
           url: String(attachment.url || ''),
+          storageKey: attachment.storageKey,
           uploadedAt: attachment.uploadedAt ? String(attachment.uploadedAt) : null,
           taskId: String(task.id),
           taskTitle: String(task.title || 'Công việc không tên'),
