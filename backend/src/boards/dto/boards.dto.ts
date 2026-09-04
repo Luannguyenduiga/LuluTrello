@@ -1,4 +1,12 @@
-import { IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, ValidateIf } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  ValidateIf,
+} from 'class-validator';
 import { ASSIGNABLE_ROLES, BoardRole } from '../../common/constants/roles';
 
 export class CreateBoardDto {
@@ -12,6 +20,13 @@ export class CreateBoardDto {
 export class UpdateBoardDto {
   @IsOptional() @IsString() name?: string;
   @IsOptional() @IsString() description?: string;
+
+  /**
+   * Lets the Zalo bot watch this board and include it in the group's daily
+   * report. Owner-only - the service rejects it from anybody else, so a leader
+   * cannot publish somebody's private board to a chat.
+   */
+  @IsOptional() @IsBoolean() zaloEnabled?: boolean;
 }
 
 /**

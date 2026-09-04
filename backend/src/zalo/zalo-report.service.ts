@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import { DocumentData, FirestoreService } from '../common/firestore/firestore.service';
 import { ZaloService } from './zalo.service';
+import { zaloBoards } from './zalo-boards';
 import {
   DEFAULT_TIMEZONE,
   dateKey,
@@ -101,29 +102,48 @@ export class ZaloReportService implements OnApplicationBootstrap, OnModuleDestro
     );
   }
 
-  /** Builds and sends the report immediately. Returns what was sent. */
-  async runNow(): Promise<{ sent: boolean; text: string }> {
-    const text = await this.buildReport();
+  /**
+   * Builds and sends the report immediately. Returns what was sent.
+   *
+   * With no board opted in there is nothing the group is entitled to hear, so
+   * the report is built for the caller but not posted: an owner who has not
+   * turned the bot on should never see it write in the group at all.
+   */
+  async runNow(): Promise<{ sent: boolean; text: string; boards: number }> {
+    const { text, boards } = await this.compose();
+    if (!boards) {
+      this.logger.log('No board has the Zalo bot enabled - the daily report was not sent.');
+      return { sent: false, text, boards };
+    }
+
     const sent = await this.zalo.sendMessage(text);
-    if (sent) this.logger.log('Daily progress report sent to Zalo.');
-    return { sent, text };
+    if (sent) this.logger.log(`Daily progress report sent to Zalo (${boards} board(s)).`);
+    return { sent, text, boards };
   }
 
   /** The report body - also useful on its own for previewing over HTTP. */
   async buildReport(now = new Date()): Promise<string> {
+    return (await this.compose(now)).text;
+  }
+
+  /** The report plus how many boards it covers, which decides whether to send. */
+  private async compose(now = new Date()): Promise<{ text: string; boards: number }> {
     const timezone = this.timezone;
     const [boards, tasks] = await Promise.all([
       this.firestore.find('boards'),
       this.firestore.find('tasks'),
     ]);
 
+    // Two filters, narrowest first: the per-board opt-in the owner controls,
+    // then the optional ZALO_REPORT_BOARDS allow-list an operator can pin on top.
+    const watched = zaloBoards(boards);
     const onlyBoards = (this.config.get<string>('ZALO_REPORT_BOARDS') || '')
       .split(',')
       .map((id) => id.trim())
       .filter(Boolean);
 
     const today = dateKey(now, timezone);
-    const stats = boards
+    const stats = watched
       .filter((board) => !onlyBoards.length || onlyBoards.includes(board.id))
       .map((board) => this.statsFor(board, tasks, today, timezone, now))
       .filter((entry) => entry.total > 0)
@@ -136,8 +156,19 @@ export class ZaloReportService implements OnApplicationBootstrap, OnModuleDestro
       );
 
     const header = `📊 BÁO CÁO TIẾN ĐỘ – ${formatDate(now, timezone)}`;
+    if (!watched.length) {
+      return {
+        text:
+          `${header}\n\nChưa có bảng nào bật trợ lý Zalo. ` +
+          'Chủ bảng có thể bật trong Workspace Settings để nhận báo cáo ở đây.',
+        boards: 0,
+      };
+    }
     if (!stats.length) {
-      return `${header}\n\nChưa có công việc nào trong hệ thống.`;
+      return {
+        text: `${header}\n\nChưa có công việc nào trong các bảng đang theo dõi.`,
+        boards: 0,
+      };
     }
 
     const maxBoards =
@@ -153,7 +184,10 @@ export class ZaloReportService implements OnApplicationBootstrap, OnModuleDestro
       sections.push(`… và ${hidden.length} bảng khác (${hiddenTasks} công việc).`);
     }
 
-    return [header, '', ...sections, this.renderTotals(stats)].join('\n');
+    return {
+      text: [header, '', ...sections, this.renderTotals(stats)].join('\n'),
+      boards: stats.length,
+    };
   }
 
   // ---- Aggregation ----

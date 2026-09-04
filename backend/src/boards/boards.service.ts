@@ -16,6 +16,7 @@ import {
   UpdateBoardDto,
 } from './dto/boards.dto';
 import { ZaloNotifierService } from '../zalo/zalo-notifier.service';
+import { ZALO_BOARD_FLAG, isZaloBoard } from '../zalo/zalo-boards';
 
 @Injectable()
 export class BoardsService {
@@ -33,6 +34,9 @@ export class BoardsService {
       ownerId: user.id,
       members: [user.id], // owner is the first member
       roles: {},
+      // The Zalo bot is opt-in: a new board is private until its owner says
+      // otherwise, so a personal board is never announced in the group chat.
+      [ZALO_BOARD_FLAG]: false,
       createdAt: new Date().toISOString(),
     });
 
@@ -92,22 +96,46 @@ export class BoardsService {
       // actions the current user is not allowed to perform
       roles: board.roles || {},
       role,
+      // The client shows the Zalo toggle from this, and only to the owner.
+      zaloEnabled: isZaloBoard(board),
     };
   }
 
-  async updateBoardDetails(board: DocumentData, dto: UpdateBoardDto) {
+  /**
+   * Board settings. Leaders may rename and describe the board; whether the Zalo
+   * bot watches it is the owner's call alone, because that decides what leaves
+   * the board for a group chat the owner may be the only member of.
+   */
+  async updateBoardDetails(board: DocumentData, dto: UpdateBoardDto, role: BoardRole) {
+    const wantsZaloChange = dto.zaloEnabled !== undefined && dto.zaloEnabled !== isZaloBoard(board);
+    if (wantsZaloChange && role !== BoardRole.OWNER) {
+      throw new ForbiddenException('Only the board owner can turn the Zalo assistant on or off');
+    }
+
+    const zaloEnabled = wantsZaloChange ? dto.zaloEnabled === true : isZaloBoard(board);
     const updated = await this.firestore.update('boards', board.id, {
       name: dto.name || board.name,
       description: dto.description !== undefined ? dto.description : board.description,
+      [ZALO_BOARD_FLAG]: zaloEnabled,
     });
+
+    // The notifier caches the opt-in per board; drop it so the very next card
+    // change obeys the switch that was just flipped.
+    if (wantsZaloChange) this.zalo.forgetBoard(board.id);
 
     this.events.emitToBoard(board.id, 'board_updated', {
       id: updated.id,
       name: updated.name,
       description: updated.description,
+      zaloEnabled,
     });
 
-    return { id: updated.id, name: updated.name, description: updated.description };
+    return {
+      id: updated.id,
+      name: updated.name,
+      description: updated.description,
+      zaloEnabled,
+    };
   }
 
   async deleteBoard(board: DocumentData) {

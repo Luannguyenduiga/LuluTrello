@@ -13,7 +13,9 @@
     "lint": "eslint \"src/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" --fix",
     "format": "prettier --write \"src/**/*.ts\"",
-    "mail:check": "node scripts/mail-check.mjs"
+    "mail:check": "node scripts/mail-check.mjs",
+    "attachments:rescue": "node scripts/attachments-rescue.mjs",
+    "attachments:restore": "node scripts/attachments-restore.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1119.0",

@@ -28,3 +28,6 @@ dist-ssr
 
 # Task attachments written by the upload route - runtime data, not source
 backend/uploads/
+
+# Attachments pulled off the old server by scripts/attachments-rescue.mjs
+backend/attachment-backup/

@@ -134,6 +134,22 @@ two things:
    boards are answered straight from Firestore; anything else goes to Gemini
    with the board data as context.
 
+### Which boards the bot may talk about
+
+The bot writes into **one shared group chat**, so it is **opt-in per board and
+off by default** — a personal board never reaches the group just because it sits
+in the same workspace.
+
+* The board's **owner** turns it on in *Workspace Settings → "Trợ lý Zalo theo
+  dõi bảng này"*. Leaders can see the switch but not move it: publishing a board
+  to a chat the owner may not even be in is the owner's decision alone.
+* A board that is off produces **no activity messages**, is **left out of the
+  20:00 report**, and is **invisible to the Q&A side** — the bot cannot mention
+  it even when asked directly, because such boards never enter its snapshot.
+* With no board opted in, the evening report is not posted at all.
+* `ZALO_REPORT_BOARDS` still narrows the report further, but it can only take
+  boards away from the opted-in set, never add one back.
+
 Notifications are fire-and-forget: if Zalo is unreachable or the token is wrong,
 the failure is logged and the API request that triggered it still succeeds.
 

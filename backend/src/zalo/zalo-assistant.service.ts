@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { DocumentData, FirestoreService } from '../common/firestore/firestore.service';
 import { ZaloReportService } from './zalo-report.service';
 import { DEFAULT_TIMEZONE, dateKey, daysUntil, formatDayMonth } from './zalo-time';
+import { zaloBoards } from './zalo-boards';
 
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 // gemini-2.5-flash still appears in the model list but Google refuses it for
@@ -136,12 +137,21 @@ export class ZaloAssistantService {
 
   // ---- Data ----
 
+  /**
+   * The bot answers only about boards whose owner opted them in. Anything else
+   * never enters the snapshot, so no board summary, deadline list or Gemini
+   * prompt can mention a board the group is not meant to know about.
+   */
   private async load(): Promise<Snapshot> {
-    const [boards, tasks, users] = await Promise.all([
+    const [allBoards, allTasks, users] = await Promise.all([
       this.firestore.find('boards'),
       this.firestore.find('tasks'),
       this.firestore.find('users'),
     ]);
+
+    const boards = zaloBoards(allBoards);
+    const watched = new Set(boards.map((board) => board.id));
+    const tasks = allTasks.filter((task) => watched.has(task.boardId));
 
     const names = new Map<string, string>();
     for (const user of users) {
@@ -228,7 +238,9 @@ export class ZaloAssistantService {
   }
 
   private renderBoards(snapshot: Snapshot): string {
-    if (!snapshot.boards.length) return 'Chưa có bảng nào.';
+    if (!snapshot.boards.length) {
+      return 'Chưa có bảng nào bật trợ lý Zalo. Chủ bảng bật trong Workspace Settings nhé.';
+    }
 
     const lines = snapshot.boards.map((board) => {
       const own = snapshot.tasks.filter((task) => task.boardId === board.id);

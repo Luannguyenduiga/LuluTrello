@@ -2,28 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
-import { ArrowLeft, Plus, Users, Trash, Edit3, Settings, Check, AlertCircle, PlusCircle, UserPlus, UserMinus, Calendar, Info, Presentation } from 'lucide-react';
+import { ArrowLeft, Plus, Users, Trash, Settings, PlusCircle, UserPlus, UserMinus, Calendar, Presentation, Bell, BellOff } from 'lucide-react';
 import TaskModal from '../components/TaskModal';
 import DeckModal from '../components/DeckModal';
 
-const Github = (props) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    width={props.width || 24}
-    height={props.height || 24}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={props.className}
-    style={props.style}
-  >
-    <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
-    <path d="M9 18c-4.51 2-5-2-7-2" />
-  </svg>
-);
 
 export default function BoardDetail() {
   const { boardId } = useParams();
@@ -53,6 +35,8 @@ export default function BoardDetail() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [editBoardName, setEditBoardName] = useState('');
   const [editBoardDesc, setEditBoardDesc] = useState('');
+  // Whether the Zalo bot may watch this board and report it to the group chat.
+  const [editBoardZalo, setEditBoardZalo] = useState(false);
 
   // Selected Task for Details Modal
   const [activeTask, setActiveTask] = useState(null);
@@ -116,6 +100,7 @@ export default function BoardDetail() {
       setBoard(boardData);
       setEditBoardName(boardData.name);
       setEditBoardDesc(boardData.description);
+      setEditBoardZalo(boardData.zaloEnabled === true);
 
       // Load all system users (to invite)
       const usersRes = await fetchWithAuth('/users');
@@ -195,8 +180,9 @@ export default function BoardDetail() {
     socket.emit('join_board', { boardId });
 
     // Handle real-time triggers from other users
-    socket.on('board_updated', ({ name, description }) => {
-      setBoard(prev => prev ? { ...prev, name, description } : null);
+    socket.on('board_updated', ({ name, description, zaloEnabled }) => {
+      setBoard(prev => prev ? { ...prev, name, description, zaloEnabled } : null);
+      setEditBoardZalo(zaloEnabled === true);
     });
 
     socket.on('board_deleted', () => {
@@ -459,10 +445,20 @@ export default function BoardDetail() {
   const handleUpdateBoard = async (e) => {
     e.preventDefault();
     try {
-      await fetchWithAuth(`/boards/${boardId}`, {
+      // Only the owner may change the Zalo opt-in, so only the owner sends it -
+      // the server rejects it from anybody else and would fail the whole save.
+      const payload = { name: editBoardName, description: editBoardDesc };
+      if (isOwner) payload.zaloEnabled = editBoardZalo;
+
+      const res = await fetchWithAuth(`/boards/${boardId}`, {
         method: 'PUT',
-        body: JSON.stringify({ name: editBoardName, description: editBoardDesc })
+        body: JSON.stringify(payload)
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const detail = Array.isArray(data.message) ? data.message.join(', ') : data.message;
+        throw new Error(detail || 'Failed to update board');
+      }
       setShowEditBoard(false);
       loadBoardData();
     } catch (err) {
@@ -864,6 +860,39 @@ export default function BoardDetail() {
                   onChange={(e) => setEditBoardDesc(e.target.value)}
                   style={{ resize: 'vertical' }}
                 />
+              </div>
+
+              {/* The bot writes into one shared group chat, so a board stays out
+                  of it until its owner asks for it. Leaders can see the setting
+                  but not change it - publishing the board is the owner's call. */}
+              <div style={{ border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px' }}>
+                <label
+                  htmlFor="edit-zalo"
+                  style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', cursor: isOwner ? 'pointer' : 'default', marginBottom: 0 }}
+                >
+                  <input
+                    id="edit-zalo"
+                    type="checkbox"
+                    checked={editBoardZalo}
+                    disabled={!isOwner}
+                    onChange={(e) => setEditBoardZalo(e.target.checked)}
+                    style={{ width: 16, height: 16, marginTop: '2px', flexShrink: 0 }}
+                  />
+                  <span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700 }}>
+                      {editBoardZalo
+                        ? <Bell style={{ width: 14, height: 14 }} />
+                        : <BellOff style={{ width: 14, height: 14 }} />}
+                      Trợ lý Zalo theo dõi bảng này
+                    </span>
+                    <span style={{ display: 'block', fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 400 }}>
+                      {editBoardZalo
+                        ? 'Bot sẽ báo hoạt động của bảng và đưa bảng vào báo cáo tiến độ hằng ngày trong nhóm Zalo.'
+                        : 'Bảng riêng tư: bot không nhắn gì về bảng này, cũng không đưa vào báo cáo nhóm.'}
+                      {!isOwner && ' Chỉ chủ bảng mới bật/tắt được.'}
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

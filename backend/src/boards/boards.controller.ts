@@ -112,8 +112,14 @@ export class BoardsController {
   @Put(':id')
   @UseGuards(BoardAccessGuard)
   @BoardRoles(BoardRole.OWNER, BoardRole.LEADER)
-  updateBoardDetails(@CurrentBoard() board: DocumentData, @Body() dto: UpdateBoardDto) {
-    return this.boardsService.updateBoardDetails(board, dto);
+  updateBoardDetails(
+    @CurrentBoard() board: DocumentData,
+    @CurrentBoardRole() role: BoardRole,
+    @Body() dto: UpdateBoardDto,
+  ) {
+    // The role goes through because one setting - the Zalo opt-in - is the
+    // owner's alone, which BoardRoles here cannot express on its own.
+    return this.boardsService.updateBoardDetails(board, dto, role);
   }
 
   // Deleting the whole workspace - owner only

@@ -3,12 +3,21 @@ import { ConfigService } from '@nestjs/config';
 import { DocumentData, FirestoreService } from '../common/firestore/firestore.service';
 import { ZaloService } from './zalo.service';
 import { DEFAULT_TIMEZONE, formatDayMonth, formatTime } from './zalo-time';
+import { isZaloBoard } from './zalo-boards';
 
 /** How long activity is collected before one combined message goes out. */
 const DEFAULT_BATCH_MS = 15_000;
 
 /** A busy board should not produce an endless message; flush early instead. */
 const MAX_LINES_PER_MESSAGE = 25;
+
+/**
+ * How long a board's opt-in verdict is reused before Firestore is asked again.
+ * Every card drag would otherwise cost a board read, and the owner's own toggle
+ * clears the entry outright, so this only bounds how long another instance of
+ * the API keeps announcing a board that was just switched off.
+ */
+const OPT_IN_CACHE_MS = 60_000;
 
 /** Board roles read as jargon in a chat message, so they are spelled out. */
 const ROLE_LABELS: Record<string, string> = {
@@ -37,6 +46,7 @@ export class ZaloNotifierService implements OnModuleDestroy {
   private readonly logger = new Logger(ZaloNotifierService.name);
   private readonly queues = new Map<string, BoardQueue>();
   private readonly names = new Map<string, string>();
+  private readonly optIn = new Map<string, { value: boolean; at: number }>();
 
   constructor(
     private readonly zalo: ZaloService,
@@ -48,6 +58,32 @@ export class ZaloNotifierService implements OnModuleDestroy {
     // Deliver whatever is still queued instead of dropping it on shutdown.
     for (const boardId of [...this.queues.keys()]) {
       void this.flush(boardId);
+    }
+  }
+
+  /**
+   * Drops the cached opt-in for a board, so an owner switching the bot off in
+   * the UI is obeyed by the next event rather than up to a minute later.
+   */
+  forgetBoard(boardId: string): void {
+    this.optIn.delete(boardId);
+  }
+
+  /** Whether this board's owner has asked the bot to watch it. */
+  private async watches(boardId: string): Promise<boolean> {
+    const cached = this.optIn.get(boardId);
+    if (cached && Date.now() - cached.at < OPT_IN_CACHE_MS) return cached.value;
+
+    try {
+      const board = await this.firestore.findById('boards', boardId);
+      const value = isZaloBoard(board);
+      this.optIn.set(boardId, { value, at: Date.now() });
+      return value;
+    } catch (error: any) {
+      // A failed lookup must not turn into an unwanted announcement, and it is
+      // not cached either - the next event asks again.
+      this.logger.error(`Could not read Zalo opt-in for board ${boardId}: ${error.message}`);
+      return false;
     }
   }
 
@@ -199,6 +235,8 @@ export class ZaloNotifierService implements OnModuleDestroy {
     build: (who: string) => Promise<string[]>,
   ): Promise<void> {
     if (!this.zalo.isConfigured) return;
+    // Nothing about a board the owner has not opted in is built, let alone sent.
+    if (!(await this.watches(boardId))) return;
 
     try {
       const who = await this.nameOf(actorId);
