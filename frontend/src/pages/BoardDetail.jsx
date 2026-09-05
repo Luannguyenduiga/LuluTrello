@@ -479,13 +479,12 @@ export default function BoardDetail() {
       alert(err.message || 'Failed to delete board');
     }
   };
-
   return (
     <div className="app-layout">
       {/* Header bar */}
       <header className="app-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <Link to="/" className="logo">
+          <Link to="/dashboard" className="logo">
             <ArrowLeft style={{ width: 20, height: 20 }} />
           </Link>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
