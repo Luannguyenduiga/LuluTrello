@@ -4,4 +4,5 @@ packages:
 
 # protobufjs ships a postinstall step that firebase-admin's gRPC layer relies on
 allowBuilds:
+  '@scarf/scarf': true
   protobufjs: true
