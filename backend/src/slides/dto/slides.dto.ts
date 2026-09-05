@@ -1,3 +1,4 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -27,14 +28,27 @@ export type DeckLanguage = 'vi' | 'en';
 
 /** Step 1: pick the sources, get an outline back for review. */
 export class OutlineRequestDto {
+  /** Attachment ids from `GET /boards/{boardId}/slides/sources`. */
+  @ApiProperty({ type: [String], maxItems: MAX_SOURCES, example: ['a_5Gh6Ij7K'] })
   @IsArray()
   @ArrayNotEmpty({ message: 'Pick at least one source file' })
   @ArrayMaxSize(MAX_SOURCES, { message: `At most ${MAX_SOURCES} sources per deck` })
   @IsString({ each: true })
   sourceIds!: string[];
 
-  @IsOptional() @IsString() @MaxLength(120) title?: string;
+  /** Left out, the model titles the deck itself. */
+  @ApiPropertyOptional({ maxLength: 120, example: 'Marketing Q3 review' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  title?: string;
 
+  @ApiPropertyOptional({
+    minimum: MIN_SLIDES,
+    maximum: MAX_SLIDES,
+    default: DEFAULT_SLIDES,
+    example: DEFAULT_SLIDES,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -42,15 +56,30 @@ export class OutlineRequestDto {
   @Max(MAX_SLIDES)
   slideCount?: number;
 
-  @IsOptional() @IsIn(['vi', 'en']) language?: DeckLanguage;
+  @ApiPropertyOptional({ enum: ['vi', 'en'], example: 'vi' })
+  @IsOptional()
+  @IsIn(['vi', 'en'])
+  language?: DeckLanguage;
 
   /** Free text: who the deck is for, what it should emphasise. */
-  @IsOptional() @IsString() @MaxLength(300) audience?: string;
+  @ApiPropertyOptional({ maxLength: 300, example: 'Ban giám đốc, tập trung vào kết quả' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  audience?: string;
 }
 
 export class SlideDto {
-  @IsString() @MaxLength(200) title!: string;
+  @ApiProperty({ maxLength: 200, example: 'Where the campaign stands' })
+  @IsString()
+  @MaxLength(200)
+  title!: string;
 
+  @ApiProperty({
+    type: [String],
+    maxItems: MAX_BULLETS,
+    example: ['Reach up 18% month on month', 'Two channels still behind plan'],
+  })
   @IsArray()
   @ArrayMaxSize(MAX_BULLETS)
   @IsString({ each: true })
@@ -58,7 +87,11 @@ export class SlideDto {
   bullets!: string[];
 
   /** Speaker notes, kept out of the slide body. */
-  @IsOptional() @IsString() @MaxLength(1200) notes?: string;
+  @ApiPropertyOptional({ maxLength: 1200 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1200)
+  notes?: string;
 }
 
 /**
@@ -67,10 +100,18 @@ export class SlideDto {
  * one deck costs exactly one Gemini call.
  */
 export class DeckRequestDto {
-  @IsString() @MaxLength(120) title!: string;
+  @ApiProperty({ maxLength: 120, example: 'Marketing Q3 review' })
+  @IsString()
+  @MaxLength(120)
+  title!: string;
 
-  @IsOptional() @IsString() @MaxLength(200) subtitle?: string;
+  @ApiPropertyOptional({ maxLength: 200, example: 'Where the campaign stands' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  subtitle?: string;
 
+  @ApiProperty({ type: [SlideDto], maxItems: MAX_SLIDES })
   @IsArray()
   @ArrayNotEmpty({ message: 'A deck needs at least one slide' })
   @ArrayMaxSize(MAX_SLIDES)
@@ -79,6 +120,7 @@ export class DeckRequestDto {
   slides!: SlideDto[];
 
   /** Names of the files the deck was built from, listed on the closing slide. */
+  @ApiPropertyOptional({ type: [String], maxItems: MAX_SOURCES, example: ['brief.pdf'] })
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(MAX_SOURCES)

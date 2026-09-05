@@ -11,26 +11,32 @@ import {
   Put,
   UseGuards,
 } from '@nestjs/common';
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  ApiBearerAuth,
+  ApiCreatedResponse,
+  ApiForbiddenResponse,
+  ApiNoContentResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+  ApiUnauthorizedResponse,
+} from '@nestjs/swagger';
 import { FirestoreService, DocumentData } from '../common/firestore/firestore.service';
 import { EventsGateway } from '../common/realtime/events.gateway';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { BoardAccessGuard } from '../common/guards/board-access.guard';
 import { CONTENT_EDITORS } from '../common/constants/roles';
 import { BoardRoles, CurrentUser, JwtUser } from '../common/decorators';
+import { CreateCardDto, UpdateCardDto } from './dto/cards.dto';
+import { CardListItemResponse, CardResponse } from './dto/cards-response.dto';
 
-class CreateCardDto {
-  @IsString() @IsNotEmpty({ message: 'Card name is required' }) name!: string;
-  @IsOptional() @IsString() description?: string;
-  @IsOptional() @IsString() createdAt?: string;
-}
-
-class UpdateCardDto {
-  @IsOptional() @IsString() name?: string;
-  @IsOptional() @IsString() description?: string;
-  @IsOptional() params?: Record<string, any>;
-}
-
+@ApiTags('Cards')
+@ApiBearerAuth('jwt')
+@ApiParam({ name: 'boardId', description: 'Board the cards belong to' })
+@ApiUnauthorizedResponse({ description: 'Missing, malformed or expired token' })
+@ApiForbiddenResponse({ description: 'The caller is not a member of this board' })
 @Controller('boards/:boardId/cards')
 @UseGuards(JwtAuthGuard, BoardAccessGuard)
 export class CardsController {
@@ -41,7 +47,10 @@ export class CardsController {
 
   // ---- Reads: available to every role, including viewers ----
 
+  /** Every column of the board. Readable by every role, viewers included. */
   @Get()
+  @ApiOperation({ summary: 'List the cards of a board' })
+  @ApiOkResponse({ type: [CardListItemResponse] })
   async getCards(@Param('boardId') boardId: string) {
     const cards = await this.firestore.find('cards', (c) => c.boardId === boardId);
     return cards.map((c) => ({
@@ -52,7 +61,11 @@ export class CardsController {
     }));
   }
 
+  /** The cards of this board that list the given account in `list_member`. */
   @Get('user/:user_id')
+  @ApiOperation({ summary: 'Cards one member belongs to' })
+  @ApiParam({ name: 'user_id', description: 'Account id to filter by' })
+  @ApiOkResponse({ type: [CardResponse] })
   async getUserCards(@Param('boardId') boardId: string, @Param('user_id') userId: string) {
     const cards = await this.firestore.find(
       'cards',
@@ -63,15 +76,21 @@ export class CardsController {
   }
 
   @Get(':id')
+  @ApiOperation({ summary: 'One card' })
+  @ApiParam({ name: 'id', description: 'Card id' })
+  @ApiOkResponse({ type: CardResponse })
+  @ApiNotFoundResponse({ description: 'No such card in this board' })
   async getCardDetails(@Param('boardId') boardId: string, @Param('id') id: string) {
     const card = await this.loadCard(boardId, id);
     return { id: card.id, name: card.name, description: card.description };
   }
 
-  // ---- Writes: closed to viewers ----
-
+  /** Adds a column. Closed to viewers. */
   @Post()
   @BoardRoles(...CONTENT_EDITORS)
+  @ApiOperation({ summary: 'Create a card' })
+  @ApiCreatedResponse({ type: CardResponse })
+  @ApiForbiddenResponse({ description: 'Viewers cannot change board content' })
   async createCard(
     @Param('boardId') boardId: string,
     @Body() dto: CreateCardDto,
@@ -94,8 +113,14 @@ export class CardsController {
     return { id: created.id, name: created.name, description: created.description };
   }
 
+  /** Only the fields present in the body are changed. Closed to viewers. */
   @Put(':id')
   @BoardRoles(...CONTENT_EDITORS)
+  @ApiOperation({ summary: 'Update a card' })
+  @ApiParam({ name: 'id', description: 'Card id' })
+  @ApiOkResponse({ type: CardResponse })
+  @ApiNotFoundResponse({ description: 'No such card in this board' })
+  @ApiForbiddenResponse({ description: 'Viewers cannot change board content' })
   async updateCardDetails(
     @Param('boardId') boardId: string,
     @Param('id') id: string,
@@ -118,9 +143,15 @@ export class CardsController {
     return { id: updated.id, name: updated.name, description: updated.description };
   }
 
+  /** Deletes the card and every task that lived in it. Closed to viewers. */
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @BoardRoles(...CONTENT_EDITORS)
+  @ApiOperation({ summary: 'Delete a card and its tasks' })
+  @ApiParam({ name: 'id', description: 'Card id' })
+  @ApiNoContentResponse({ description: 'Card and its tasks are gone' })
+  @ApiNotFoundResponse({ description: 'No such card in this board' })
+  @ApiForbiddenResponse({ description: 'Viewers cannot change board content' })
   async deleteCard(@Param('boardId') boardId: string, @Param('id') id: string) {
     await this.loadCard(boardId, id);
     await this.firestore.delete('cards', id);

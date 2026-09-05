@@ -17,6 +17,21 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiCreatedResponse,
+  ApiForbiddenResponse,
+  ApiNoContentResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+  ApiUnauthorizedResponse,
+} from '@nestjs/swagger';
 import { FirestoreService, DocumentData } from '../common/firestore/firestore.service';
 import { EventsGateway } from '../common/realtime/events.gateway';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -33,6 +48,16 @@ import {
   JwtUser,
 } from '../common/decorators';
 import { AddCommentDto, AssignMemberDto, CreateTaskDto, UpdateTaskDto } from './dto/tasks.dto';
+import {
+  AttachmentPreviewResponse,
+  AttachmentResponse,
+  CommentResponse,
+  TaskAssigneeResponse,
+  TaskCreatedResponse,
+  TaskDetailsResponse,
+  TaskListItemResponse,
+  TaskUpdatedResponse,
+} from './dto/tasks-response.dto';
 import { ZaloNotifierService } from '../zalo/zalo-notifier.service';
 import { PreviewService } from '../preview/preview.service';
 import { StorageService } from '../storage/storage.service';
@@ -46,6 +71,13 @@ import { join } from 'path';
  * to that board and card. Without this a task id alone was enough to read or
  * mutate tasks across board boundaries.
  */
+@ApiTags('Tasks')
+@ApiBearerAuth('jwt')
+@ApiParam({ name: 'boardId', description: 'Board the card belongs to' })
+@ApiParam({ name: 'id', description: 'Card (column) the tasks live in' })
+@ApiUnauthorizedResponse({ description: 'Missing, malformed or expired token' })
+@ApiForbiddenResponse({ description: 'Not a member of this board, or the role is too low' })
+@ApiNotFoundResponse({ description: 'The card or task does not belong to this board' })
 @Controller('boards/:boardId/cards/:id/tasks')
 @UseGuards(JwtAuthGuard, BoardAccessGuard, CardInBoardGuard)
 export class TasksController {
@@ -60,7 +92,10 @@ export class TasksController {
 
   // ---- Reads: available to every role, including viewers ----
 
+  /** Every task in this card. Readable by every role, viewers included. */
   @Get()
+  @ApiOperation({ summary: 'List the tasks of a card' })
+  @ApiOkResponse({ type: [TaskListItemResponse] })
   async getTasks(@Param('boardId') boardId: string, @Param('id') cardId: string) {
     const tasks = await this.firestore.find(
       'tasks',
@@ -77,8 +112,12 @@ export class TasksController {
     }));
   }
 
+  /** The task with its attachments and comments. */
   @Get(':taskId')
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'One task, with attachments and comments' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiOkResponse({ type: TaskDetailsResponse })
   getTaskDetails(@CurrentTask() task: DocumentData) {
     return {
       id: task.id,
@@ -94,6 +133,9 @@ export class TasksController {
 
   @Get(':taskId/assign')
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Who the task is assigned to' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiOkResponse({ type: [TaskAssigneeResponse] })
   getAssignedMembers(@Param('taskId') taskId: string, @CurrentTask() task: DocumentData) {
     const assigned: string[] = task.assignedMembers || [];
     return assigned.map((memberId) => ({ taskId, memberId }));
@@ -101,8 +143,12 @@ export class TasksController {
 
   // ---- Writes: closed to viewers ----
 
+  /** Adds a task to this card. Closed to viewers; a deadline needs owner or leader. */
   @Post()
   @BoardRoles(...CONTENT_EDITORS)
+  @ApiOperation({ summary: 'Create a task' })
+  @ApiCreatedResponse({ type: TaskCreatedResponse })
+  @ApiForbiddenResponse({ description: 'Viewers, or a member trying to set a deadline' })
   async createTask(
     @Param('boardId') boardId: string,
     @Param('id') cardId: string,
@@ -141,9 +187,20 @@ export class TasksController {
     };
   }
 
+  /**
+   * Edits a task, or moves it to another column of the same board via `card_id`.
+   * Only the fields present in the body change.
+   */
   @Put(':taskId')
   @BoardRoles(...CONTENT_EDITORS)
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Update or move a task' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiOkResponse({ type: TaskUpdatedResponse })
+  @ApiBadRequestResponse({
+    description: 'The destination card is in another board, or an assignee is not a member',
+  })
+  @ApiForbiddenResponse({ description: 'Viewers, or a member touching the deadline' })
   async updateTaskDetails(
     @Param('boardId') boardId: string,
     @Param('id') cardId: string,
@@ -196,10 +253,14 @@ export class TasksController {
     return { id: updated.id, cardId: updated.cardId };
   }
 
+  /** Owners and leaders only. */
   @Delete(':taskId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @BoardRoles(...BOARD_MANAGERS)
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Delete a task' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiNoContentResponse({ description: 'The task is gone' })
   async deleteTask(
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
@@ -211,9 +272,14 @@ export class TasksController {
     this.zalo.taskDeleted(boardId, user.id, task);
   }
 
+  /** Adding somebody already assigned is a no-op rather than an error. */
   @Post(':taskId/assign')
   @BoardRoles(...CONTENT_EDITORS)
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Assign a member to the task' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiCreatedResponse({ type: TaskAssigneeResponse })
+  @ApiBadRequestResponse({ description: 'The account is not a member of this board' })
   async assignMember(
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
@@ -235,10 +301,15 @@ export class TasksController {
     return { taskId, memberId: dto.memberId };
   }
 
+  /** Owners and leaders only. */
   @Delete(':taskId/assign/:memberId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @BoardRoles(...BOARD_MANAGERS)
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Unassign a member' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiParam({ name: 'memberId', description: 'Account id to unassign' })
+  @ApiNoContentResponse({ description: 'The member is no longer assigned' })
   async removeMemberAssignment(
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
@@ -261,6 +332,11 @@ export class TasksController {
    */
   @Get(':taskId/attachments/:attachmentId/preview')
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Render one attachment for the viewer' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiParam({ name: 'attachmentId', description: 'Attachment id' })
+  @ApiOkResponse({ type: AttachmentPreviewResponse })
+  @ApiNotFoundResponse({ description: 'No such attachment on this task' })
   async previewAttachment(
     @Req() req: any,
     @Param('attachmentId') attachmentId: string,
@@ -275,10 +351,26 @@ export class TasksController {
     return this.preview.build(attachment, `${req.protocol}://${req.get('host')}`);
   }
 
+  /**
+   * Uploads one file, up to the 50 MB body limit. It goes to R2 when the server
+   * has credentials for it, and to the local disk otherwise.
+   */
   @Post(':taskId/attachments')
   @BoardRoles(...CONTENT_EDITORS)
   @UseGuards(TaskInBoardGuard)
   @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Attach a file to the task' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  @ApiCreatedResponse({ type: AttachmentResponse })
+  @ApiBadRequestResponse({ description: 'No file in the request' })
   async addAttachment(
     @Req() req: any,
     @Param('boardId') boardId: string,
@@ -330,10 +422,15 @@ export class TasksController {
     return newAttachment;
   }
 
+  /** Removes the record and, where it can, the stored file behind it. */
   @Delete(':taskId/attachments/:attachmentId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @BoardRoles(...CONTENT_EDITORS)
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Remove an attachment' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiParam({ name: 'attachmentId', description: 'Attachment id' })
+  @ApiNoContentResponse({ description: 'The attachment is gone' })
   async removeAttachment(
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
@@ -374,6 +471,9 @@ export class TasksController {
   @Post(':taskId/comments')
   @BoardRoles(...CONTENT_EDITORS)
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Comment on a task' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiCreatedResponse({ type: CommentResponse })
   async addComment(
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,
@@ -403,10 +503,16 @@ export class TasksController {
     return newComment;
   }
 
+  /** The author may delete their own comment; owners and leaders may delete any. */
   @Delete(':taskId/comments/:commentId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @BoardRoles(...CONTENT_EDITORS)
   @UseGuards(TaskInBoardGuard)
+  @ApiOperation({ summary: 'Delete a comment' })
+  @ApiParam({ name: 'taskId', description: 'Task id' })
+  @ApiParam({ name: 'commentId', description: 'Comment id' })
+  @ApiNoContentResponse({ description: 'The comment is gone' })
+  @ApiForbiddenResponse({ description: 'Not the author, and not a board manager' })
   async removeComment(
     @Param('boardId') boardId: string,
     @Param('taskId') taskId: string,

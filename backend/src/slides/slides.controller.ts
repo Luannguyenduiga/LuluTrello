@@ -10,12 +10,24 @@ import {
   StreamableFile,
   UseGuards,
 } from '@nestjs/common';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiForbiddenResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiProduces,
+  ApiTags,
+  ApiUnauthorizedResponse,
+} from '@nestjs/swagger';
 import { Response } from 'express';
 import { DocumentData } from '../common/firestore/firestore.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { BoardAccessGuard } from '../common/guards/board-access.guard';
 import { CurrentBoard } from '../common/decorators';
 import { DeckRequestDto, OutlineRequestDto } from './dto/slides.dto';
+import { DeckOutlineResponse, DeckSourcesResponse } from './dto/slides-response.dto';
 import { SlidesService } from './slides.service';
 import { SlidesAccessGuard } from './slides-access.guard';
 
@@ -30,6 +42,11 @@ import { SlidesAccessGuard } from './slides-access.guard';
  * model call, /pptx renders whatever the reviewer settled on. Regenerating the
  * outline is then an explicit choice rather than a side effect of downloading.
  */
+@ApiTags('Slides')
+@ApiBearerAuth('jwt')
+@ApiParam({ name: 'boardId', description: 'Board whose attachments feed the deck' })
+@ApiUnauthorizedResponse({ description: 'Missing, malformed or expired token' })
+@ApiForbiddenResponse({ description: 'Only the board owner and ADMIN_EMAILS may build a deck' })
 @Controller('boards/:boardId/slides')
 @UseGuards(JwtAuthGuard, BoardAccessGuard, SlidesAccessGuard)
 export class SlidesController {
@@ -37,6 +54,8 @@ export class SlidesController {
 
   /** The files that can be used as sources, and whether a model is configured. */
   @Get('sources')
+  @ApiOperation({ summary: 'Files the deck can be built from' })
+  @ApiOkResponse({ type: DeckSourcesResponse })
   async sources(@CurrentBoard() board: DocumentData) {
     const sources = await this.slides.listSources(board.id);
     return {
@@ -48,18 +67,35 @@ export class SlidesController {
     };
   }
 
+  /**
+   * Step 1: reads the chosen files and plans the deck. One model call. The
+   * outline comes back for review - nothing is rendered yet.
+   */
   @Post('outline')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Plan a deck from the chosen sources' })
+  @ApiOkResponse({ type: DeckOutlineResponse })
+  @ApiBadRequestResponse({ description: 'None of the chosen files belong to this board' })
   outline(@CurrentBoard() board: DocumentData, @Body() dto: OutlineRequestDto) {
     return this.slides.buildOutline(board, dto);
   }
 
+  /**
+   * Step 2: renders the reviewed outline into a .pptx file. The slides come from
+   * the body rather than being regenerated, so editing the outline is free.
+   */
   @Post('pptx')
   @HttpCode(HttpStatus.OK)
   @Header(
     'Content-Type',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   )
+  @ApiOperation({ summary: 'Render the deck as a .pptx download' })
+  @ApiProduces('application/vnd.openxmlformats-officedocument.presentationml.presentation')
+  @ApiOkResponse({
+    description: 'The PowerPoint file, named after the deck title',
+    schema: { type: 'string', format: 'binary' },
+  })
   async pptx(
     @CurrentBoard() board: DocumentData,
     @Body() dto: DeckRequestDto,
